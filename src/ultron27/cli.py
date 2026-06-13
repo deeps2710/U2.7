@@ -2,33 +2,61 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from .audit import append_audit_record
+from .config import load_config
 from .executor import Executor
 from .planner import DEFAULT_DATASET_PATH, DatasetPlanner
 from .policy import decide
 from .tools import validate_tool_call
+from . import __version__
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="ULTRON 2.7 text-first assistant")
+    parser = argparse.ArgumentParser(
+        description="ULTRON 2.7 text-first assistant",
+        epilog='Examples: ultron "set volume to 40 percent" | ultron "open notepad" | ultron "delete project_report.txt" --yes',
+    )
     parser.add_argument("utterance", nargs="+", help="Command to plan and execute")
-    parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET_PATH, help="Dataset JSONL path")
-    parser.add_argument("--execute", action="store_true", help="Run executor instead of dry-run")
+    parser.add_argument("--config", type=Path, default=None, help="JSON config path")
+    parser.add_argument("--dataset", type=Path, default=None, help="Dataset JSONL path")
+    parser.add_argument("--audit-log", type=Path, default=None, help="Audit log path")
+    parser.add_argument("--workspace", type=Path, default=None, help="Workspace used by file/note tools")
+    parser.add_argument("--execute", action="store_true", help="Run safe implemented tools instead of dry-run")
+    parser.add_argument("--dry-run", action="store_true", help="Preview tool execution even if config disables dry-run")
     parser.add_argument("--yes", action="store_true", help="Confirm commands that require confirmation")
-    parser.add_argument("--audit-log", type=Path, default=Path(".ultron/audit.jsonl"), help="Audit log path")
+    parser.add_argument("--no-audit", action="store_true", help="Print the response without writing an audit record")
+    parser.add_argument("--version", action="version", version=f"ultron27 {__version__}")
     args = parser.parse_args(argv)
 
+    try:
+        config = load_config(args.config)
+    except (FileNotFoundError, ValueError) as exc:
+        parser.error(str(exc))
+
+    dataset_path = args.dataset or config.dataset_path
+    audit_log = args.audit_log or config.audit_log
+    workspace = args.workspace or config.workspace
+    dry_run = config.dry_run
+    if args.execute:
+        dry_run = False
+    if args.dry_run:
+        dry_run = True
+
+    if not dataset_path.exists():
+        parser.error(f"Dataset file not found: {dataset_path}")
+
     utterance = " ".join(args.utterance)
-    planner = DatasetPlanner.from_jsonl(args.dataset)
+    planner = DatasetPlanner.from_jsonl(dataset_path)
     plan = planner.plan(utterance)
     validation = validate_tool_call(plan.tool_call)
     decision = decide(plan, validation, confirmed=args.yes)
 
-    executor = Executor(dry_run=not args.execute)
+    executor = Executor(dry_run=dry_run, workspace=workspace)
     if decision.action == "allow":
         result = executor.execute(plan.tool_call)
     elif decision.action == "confirm":
@@ -51,8 +79,18 @@ def main(argv: list[str] | None = None) -> None:
         "validation": asdict(validation),
         "policy": asdict(decision),
         "result": asdict(result) if hasattr(result, "__dataclass_fields__") else result,
+        "runtime": {
+            "dry_run": dry_run,
+            "execute_requested": args.execute,
+            "confirmed": args.yes,
+            "dataset_path": str(dataset_path),
+            "workspace": str(workspace),
+            "python": sys.version.split()[0],
+            "platform": sys.platform,
+        },
     }
-    append_audit_record(payload, args.audit_log)
+    if not args.no_audit:
+        append_audit_record(payload, audit_log)
     print(json.dumps(payload, indent=2, ensure_ascii=False))
 
 

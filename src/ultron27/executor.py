@@ -82,6 +82,9 @@ class Executor:
         return ToolResult("not_implemented", "Brightness control needs a Windows/macOS/Linux adapter.", data={"level": level})
 
     def _handle_delete_file(self, call: ToolCall) -> ToolResult:
+        file_name = str(call.arguments["file_name"])
+        if self.dry_run:
+            return ToolResult("dry_run", f"Would delete file after confirmation: {file_name}", data={"file_name": file_name})
         return ToolResult("not_implemented", "Destructive file deletion is intentionally not implemented in the MVP.", data=call.arguments)
 
     def _handle_run_script(self, call: ToolCall) -> ToolResult:

@@ -30,13 +30,49 @@ docs/                    Supplied research paper and architecture notes
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e .[dev]
-python -m ultron27 "set volume to 40 percent"
-python -m ultron27 "delete project_report.txt" --yes
+ultron "set volume to 40 percent"
+ultron "open notepad"
+ultron "delete project_report.txt" --yes
 python scripts/evaluate_dataset.py --split test
 python -m unittest discover -s tests
 ```
 
-By default ULTRON runs in dry-run mode. Use `--execute` only after reviewing the tool, policy, and implementation. High-risk actions are still not implemented as destructive operations.
+If the `ultron` command is not available after installation, use:
+
+```powershell
+python -m ultron27 "set volume to 40 percent"
+```
+
+By default ULTRON runs in dry-run mode. Use `--execute` only after reviewing the tool, policy, and implementation. High-risk actions are still not implemented as destructive operations, even after confirmation.
+
+## Configuration
+
+ULTRON looks for `ultron.config.json` first, then `.ultron/config.json`. You can start from `ultron.config.example.json`:
+
+```json
+{
+  "dataset_path": "data/jarvis_dataset_v2/jarvis_laptop_commands_synthetic_v2.jsonl",
+  "audit_log": ".ultron/audit.jsonl",
+  "dry_run": true,
+  "workspace": "."
+}
+```
+
+Environment variables override the JSON config:
+
+```powershell
+$env:ULTRON_DRY_RUN = "true"
+$env:ULTRON_AUDIT_LOG = ".ultron/audit.jsonl"
+```
+
+Useful CLI flags:
+
+```powershell
+ultron "open notepad" --no-audit
+ultron "create note standup" --workspace .
+ultron "open notepad" --execute
+ultron "delete project_report.txt" --yes
+```
 
 ## Example
 

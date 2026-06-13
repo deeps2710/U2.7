@@ -1,0 +1,119 @@
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import Mapping
+
+from .audit import DEFAULT_AUDIT_LOG
+from .planner import DEFAULT_DATASET_PATH
+
+
+DEFAULT_CONFIG_CANDIDATES = (
+    Path("ultron.config.json"),
+    Path(".ultron/config.json"),
+)
+
+
+@dataclass(frozen=True)
+class UltronConfig:
+    dataset_path: Path = DEFAULT_DATASET_PATH
+    audit_log: Path = DEFAULT_AUDIT_LOG
+    dry_run: bool = True
+    workspace: Path = Path(".")
+
+
+def load_config(
+    config_path: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+    base_dir: Path | None = None,
+) -> UltronConfig:
+    base = base_dir or Path.cwd()
+    env = environ or os.environ
+    config = UltronConfig()
+
+    selected_path = _resolve_config_path(config_path, base)
+    if selected_path is not None:
+        config = _merge_json_config(config, selected_path)
+
+    return _merge_env_config(config, env, base)
+
+
+def _resolve_config_path(config_path: Path | None, base_dir: Path) -> Path | None:
+    if config_path is not None:
+        path = _resolve_path(config_path, base_dir)
+        if not path.exists():
+            raise FileNotFoundError(f"Config file not found: {path}")
+        return path
+
+    for candidate in DEFAULT_CONFIG_CANDIDATES:
+        path = _resolve_path(candidate, base_dir)
+        if path.exists():
+            return path
+    return None
+
+
+def _merge_json_config(config: UltronConfig, path: Path) -> UltronConfig:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON config in {path}: {exc}") from exc
+
+    if not isinstance(raw, dict):
+        raise ValueError(f"Config file must contain a JSON object: {path}")
+
+    base = path.parent
+    updates: dict[str, object] = {}
+    if "dataset_path" in raw:
+        updates["dataset_path"] = _resolve_path(_expect_string(raw, "dataset_path"), base)
+    if "audit_log" in raw:
+        updates["audit_log"] = _resolve_path(_expect_string(raw, "audit_log"), base)
+    if "dry_run" in raw:
+        updates["dry_run"] = _expect_bool(raw, "dry_run")
+    if "workspace" in raw:
+        updates["workspace"] = _resolve_path(_expect_string(raw, "workspace"), base)
+    return replace(config, **updates)
+
+
+def _merge_env_config(config: UltronConfig, env: Mapping[str, str], base_dir: Path) -> UltronConfig:
+    updates: dict[str, object] = {}
+    if "ULTRON_DATASET_PATH" in env:
+        updates["dataset_path"] = _resolve_path(Path(env["ULTRON_DATASET_PATH"]), base_dir)
+    if "ULTRON_AUDIT_LOG" in env:
+        updates["audit_log"] = _resolve_path(Path(env["ULTRON_AUDIT_LOG"]), base_dir)
+    if "ULTRON_DRY_RUN" in env:
+        updates["dry_run"] = parse_bool(env["ULTRON_DRY_RUN"])
+    if "ULTRON_WORKSPACE" in env:
+        updates["workspace"] = _resolve_path(Path(env["ULTRON_WORKSPACE"]), base_dir)
+    return replace(config, **updates)
+
+
+def parse_bool(value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    raise ValueError(f"Expected a boolean value, got: {value}")
+
+
+def _resolve_path(path: str | Path, base_dir: Path) -> Path:
+    candidate = Path(path).expanduser()
+    if candidate.is_absolute():
+        return candidate
+    return base_dir / candidate
+
+
+def _expect_string(raw: dict[str, object], key: str) -> Path:
+    value = raw[key]
+    if not isinstance(value, str):
+        raise ValueError(f"{key} must be a string path")
+    return Path(value)
+
+
+def _expect_bool(raw: dict[str, object], key: str) -> bool:
+    value = raw[key]
+    if not isinstance(value, bool):
+        raise ValueError(f"{key} must be true or false")
+    return value

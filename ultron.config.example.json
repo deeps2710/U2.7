@@ -1,0 +1,6 @@
+{
+  "dataset_path": "data/jarvis_dataset_v2/jarvis_laptop_commands_synthetic_v2.jsonl",
+  "audit_log": ".ultron/audit.jsonl",
+  "dry_run": true,
+  "workspace": "."
+}
