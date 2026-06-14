@@ -12,6 +12,7 @@ from ultron27.cli import main
 from ultron27.config import load_config
 from ultron27.dataset_quality import DatasetRow, analyze_dataset, build_safety_cases, is_underspecified
 from ultron27.executor import Executor
+from ultron27.llm import LLMPlanner, LLMPlannerError, parse_llm_tool_call
 from ultron27.models import ToolCall
 from ultron27.planner import DatasetPlanner, regex_plan
 from ultron27.policy import decide
@@ -248,6 +249,60 @@ class PipelineTest(unittest.TestCase):
         )
 
         self.assertTrue(is_underspecified(row))
+
+    def test_phase4_llm_json_tool_call_parser(self) -> None:
+        call, intent, confidence = parse_llm_tool_call(
+            '{"intent":"set_volume","tool_name":"set_system_volume","tool_arguments":{"level":35},"confidence":0.91}'
+        )
+
+        self.assertEqual(call, ToolCall("set_system_volume", {"level": 35}))
+        self.assertEqual(intent, "set_volume")
+        self.assertEqual(confidence, 0.91)
+
+    def test_phase4_llm_planner_validates_tool_schema(self) -> None:
+        class FakeProvider:
+            def complete(self, prompt: str, timeout: float) -> str:
+                return '{"intent":"set_volume","tool_name":"set_system_volume","tool_arguments":{"level":150},"confidence":1}'
+
+        planner = LLMPlanner(FakeProvider())
+
+        with self.assertRaises(LLMPlannerError):
+            planner.plan("set volume very high")
+
+    def test_phase4_llm_planner_produces_safe_plan(self) -> None:
+        class FakeProvider:
+            def complete(self, prompt: str, timeout: float) -> str:
+                return '{"intent":"open_app","tool_name":"open_application","tool_arguments":{"app":"notepad"},"confidence":0.8}'
+
+        plan = LLMPlanner(FakeProvider()).plan("launch the basic text editor")
+
+        self.assertEqual(plan.tool_call, ToolCall("open_application", {"app": "notepad"}))
+        self.assertEqual(plan.source, "llm")
+        self.assertEqual(plan.risk_level.value, "low")
+
+    def test_phase4_config_accepts_llm_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "ultron.config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "planner_mode": "hybrid",
+                        "llm_provider": "ollama",
+                        "llm_model": "qwen-test",
+                        "llm_endpoint": "http://localhost:11434",
+                        "llm_timeout_seconds": 3,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path, environ={}, base_dir=root)
+
+            self.assertEqual(config.planner_mode, "hybrid")
+            self.assertEqual(config.llm_model, "qwen-test")
+            self.assertEqual(config.llm_endpoint, "http://localhost:11434")
+            self.assertEqual(config.llm_timeout_seconds, 3.0)
 
 
 if __name__ == "__main__":

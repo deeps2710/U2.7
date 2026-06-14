@@ -15,6 +15,14 @@ The current repository implements the middle of the pipeline:
 text command -> planner -> validator -> policy -> safe executor -> audit log
 ```
 
+Phase 4 optionally expands the planner step:
+
+```text
+dataset/rules planner -> optional LLM planner -> typed tool call
+```
+
+The optional LLM planner is only allowed to propose a JSON tool call. The validator, policy layer, confirmation gates, and executor remain authoritative.
+
 ## Core Principles
 
 - Local-first by default.
@@ -25,6 +33,7 @@ text command -> planner -> validator -> policy -> safe executor -> audit log
 - Voice and LLM components are adapters around the same safe tool layer.
 - Real execution is limited to low-risk, allowlisted tools.
 - File tools are restricted to configured safe roots.
+- LLM output is treated as untrusted input until it passes schema validation and policy.
 
 ## Risk Levels
 

@@ -25,6 +25,11 @@ class UltronConfig:
     safe_roots: tuple[Path, ...] = (Path("."),)
     app_aliases: dict[str, str] | None = None
     screenshot_dir: Path = Path(".ultron/screenshots")
+    planner_mode: str = "rules"
+    llm_provider: str = "ollama"
+    llm_model: str = "qwen2.5:7b-instruct"
+    llm_endpoint: str = "http://localhost:11434"
+    llm_timeout_seconds: float = 8.0
 
 
 def load_config(
@@ -82,6 +87,16 @@ def _merge_json_config(config: UltronConfig, path: Path) -> UltronConfig:
         updates["app_aliases"] = _expect_string_mapping(raw, "app_aliases")
     if "screenshot_dir" in raw:
         updates["screenshot_dir"] = _resolve_path(_expect_string(raw, "screenshot_dir"), base)
+    if "planner_mode" in raw:
+        updates["planner_mode"] = _expect_choice(raw, "planner_mode", {"rules", "hybrid", "llm"})
+    if "llm_provider" in raw:
+        updates["llm_provider"] = _expect_choice(raw, "llm_provider", {"ollama"})
+    if "llm_model" in raw:
+        updates["llm_model"] = _expect_plain_string(raw, "llm_model")
+    if "llm_endpoint" in raw:
+        updates["llm_endpoint"] = _expect_plain_string(raw, "llm_endpoint")
+    if "llm_timeout_seconds" in raw:
+        updates["llm_timeout_seconds"] = _expect_number(raw, "llm_timeout_seconds")
     return replace(config, **updates)
 
 
@@ -99,6 +114,16 @@ def _merge_env_config(config: UltronConfig, env: Mapping[str, str], base_dir: Pa
         updates["safe_roots"] = tuple(_resolve_path(Path(item.strip()), base_dir) for item in env["ULTRON_SAFE_ROOTS"].split(";") if item.strip())
     if "ULTRON_SCREENSHOT_DIR" in env:
         updates["screenshot_dir"] = _resolve_path(Path(env["ULTRON_SCREENSHOT_DIR"]), base_dir)
+    if "ULTRON_PLANNER_MODE" in env:
+        updates["planner_mode"] = _parse_choice(env["ULTRON_PLANNER_MODE"], "ULTRON_PLANNER_MODE", {"rules", "hybrid", "llm"})
+    if "ULTRON_LLM_PROVIDER" in env:
+        updates["llm_provider"] = _parse_choice(env["ULTRON_LLM_PROVIDER"], "ULTRON_LLM_PROVIDER", {"ollama"})
+    if "ULTRON_LLM_MODEL" in env:
+        updates["llm_model"] = env["ULTRON_LLM_MODEL"]
+    if "ULTRON_LLM_ENDPOINT" in env:
+        updates["llm_endpoint"] = env["ULTRON_LLM_ENDPOINT"]
+    if "ULTRON_LLM_TIMEOUT_SECONDS" in env:
+        updates["llm_timeout_seconds"] = float(env["ULTRON_LLM_TIMEOUT_SECONDS"])
     return replace(config, **updates)
 
 
@@ -125,6 +150,13 @@ def _expect_string(raw: dict[str, object], key: str) -> Path:
     return Path(value)
 
 
+def _expect_plain_string(raw: dict[str, object], key: str) -> str:
+    value = raw[key]
+    if not isinstance(value, str):
+        raise ValueError(f"{key} must be a string")
+    return value
+
+
 def _expect_bool(raw: dict[str, object], key: str) -> bool:
     value = raw[key]
     if not isinstance(value, bool):
@@ -144,3 +176,24 @@ def _expect_string_mapping(raw: dict[str, object], key: str) -> dict[str, str]:
     if not isinstance(value, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()):
         raise ValueError(f"{key} must be an object with string keys and values")
     return dict(value)
+
+
+def _expect_choice(raw: dict[str, object], key: str, allowed: set[str]) -> str:
+    value = raw[key]
+    if not isinstance(value, str):
+        raise ValueError(f"{key} must be a string")
+    return _parse_choice(value, key, allowed)
+
+
+def _parse_choice(value: str, key: str, allowed: set[str]) -> str:
+    normalized = value.strip().lower()
+    if normalized not in allowed:
+        raise ValueError(f"{key} must be one of: {', '.join(sorted(allowed))}")
+    return normalized
+
+
+def _expect_number(raw: dict[str, object], key: str) -> float:
+    value = raw[key]
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise ValueError(f"{key} must be a number")
+    return float(value)

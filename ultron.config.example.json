@@ -15,5 +15,10 @@
     "calculator": "calc.exe",
     "paint": "mspaint.exe",
     "terminal": "wt.exe"
-  }
+  },
+  "planner_mode": "rules",
+  "llm_provider": "ollama",
+  "llm_model": "qwen2.5:7b-instruct",
+  "llm_endpoint": "http://localhost:11434",
+  "llm_timeout_seconds": 8
 }

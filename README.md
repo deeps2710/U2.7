@@ -16,6 +16,7 @@ The repo is built around the supplied research paper and synthetic laptop-comman
 - Dataset evaluation script for tool-name, argument, and confirmation-gate accuracy.
 - Dataset quality analyzer for duplicate-label conflicts, underspecified commands, and safety case extraction.
 - Safety regression evaluator for high-risk and confirmation-gated examples.
+- Optional LLM planner adapter with Ollama support, strict JSON parsing, schema validation, and safe fallback behavior.
 - Pytest test suite for planner, validation, policy, and execution behavior.
 
 ## Project Layout
@@ -40,6 +41,7 @@ ultron "delete project_report.txt" --yes
 python scripts/evaluate_dataset.py --split test
 python scripts/analyze_dataset_quality.py
 python scripts/evaluate_safety_regression.py
+python -m ultron27 "launch the basic text editor" --planner-mode hybrid
 python -m unittest discover -s tests
 ```
 
@@ -68,7 +70,12 @@ ULTRON looks for `ultron.config.json` first, then `.ultron/config.json`. You can
     "calculator": "calc.exe",
     "paint": "mspaint.exe",
     "terminal": "wt.exe"
-  }
+  },
+  "planner_mode": "rules",
+  "llm_provider": "ollama",
+  "llm_model": "qwen2.5:7b-instruct",
+  "llm_endpoint": "http://localhost:11434",
+  "llm_timeout_seconds": 8
 }
 ```
 
@@ -78,6 +85,9 @@ Environment variables override the JSON config:
 $env:ULTRON_DRY_RUN = "true"
 $env:ULTRON_AUDIT_LOG = ".ultron/audit.jsonl"
 $env:ULTRON_SAFE_ROOTS = ".;~/Desktop;~/Documents;~/Downloads"
+$env:ULTRON_PLANNER_MODE = "rules"
+$env:ULTRON_LLM_MODEL = "qwen2.5:7b-instruct"
+$env:ULTRON_LLM_ENDPOINT = "http://localhost:11434"
 ```
 
 Useful CLI flags:
@@ -126,6 +136,37 @@ Underspecified examples: 879
 Safety examples: 362
 Safety regression policy-action accuracy: 1.0
 ```
+
+## Phase 4 LLM Planner
+
+Phase 4 adds an optional LLM planner. The default remains `rules`, so ULTRON continues to work without any model server.
+
+Planner modes:
+
+- `rules`: dataset, regex, and fuzzy planning only.
+- `hybrid`: use rules first; if no safe rule matches, try the LLM planner.
+- `llm`: try the LLM planner first, then fall back safely if the provider is unavailable or invalid.
+
+Example:
+
+```powershell
+python -m ultron27 "launch the basic text editor" --planner-mode hybrid
+```
+
+The LLM must return JSON like:
+
+```json
+{
+  "intent": "open_app",
+  "tool_name": "open_application",
+  "tool_arguments": {
+    "app": "notepad"
+  },
+  "confidence": 0.8
+}
+```
+
+The returned tool call still goes through schema validation, risk policy, confirmation gates, and the safe executor.
 
 ## Example
 
