@@ -17,6 +17,7 @@ The repo is built around the supplied research paper and synthetic laptop-comman
 - Dataset quality analyzer for duplicate-label conflicts, underspecified commands, and safety case extraction.
 - Safety regression evaluator for high-risk and confirmation-gated examples.
 - Optional LLM planner adapter with Ollama support, strict JSON parsing, schema validation, and safe fallback behavior.
+- Interactive assistant console for repeated commands, confirmations, and JSON inspection.
 - Pytest test suite for planner, validation, policy, and execution behavior.
 
 ## Project Layout
@@ -42,6 +43,7 @@ python scripts/evaluate_dataset.py --split test
 python scripts/analyze_dataset_quality.py
 python scripts/evaluate_safety_regression.py
 python -m ultron27 "launch the basic text editor" --planner-mode hybrid
+python -m ultron27 --interactive
 python -m unittest discover -s tests
 ```
 
@@ -94,6 +96,8 @@ Useful CLI flags:
 
 ```powershell
 ultron "open notepad" --no-audit
+ultron "open notepad" --text
+ultron --interactive
 ultron "create note standup" --workspace .
 ultron "open notepad" --execute
 ultron "delete project_report.txt" --yes
@@ -168,6 +172,35 @@ The LLM must return JSON like:
 
 The returned tool call still goes through schema validation, risk policy, confirmation gates, and the safe executor.
 
+## Phase 5 Interactive Prototype
+
+Phase 5 adds a basic assistant console for day-to-day prototype testing:
+
+```powershell
+python -m ultron27 --interactive
+```
+
+Inside the console:
+
+```text
+/help              Show console commands.
+/json <command>    Run a command and print the full JSON payload.
+/yes <command>     Confirm a command that needs confirmation.
+/exit              Leave the console.
+```
+
+The console uses the same runtime pipeline as the one-shot CLI:
+
+```text
+utterance -> planner -> validator -> policy -> executor -> audit -> response
+```
+
+Single-command mode still prints JSON by default. Use `--text` for the same concise response format used by the console:
+
+```powershell
+python -m ultron27 "set volume to 40 percent" --text
+```
+
 ## Example
 
 ```powershell
@@ -212,6 +245,5 @@ High-risk operations such as deleting files, sending email, running scripts, res
 1. Add local STT using faster-whisper or whisper.cpp.
 2. Add local TTS using Piper.
 3. Add wake-word and VAD using openWakeWord and Silero VAD.
-4. Add optional local/cloud LLM planner adapters.
-5. Grow the dataset with real corrected transcripts and Hinglish/Hindi variants.
-6. Add richer OS-specific executor plugins for Windows, macOS, and Linux.
+4. Grow the dataset with real corrected transcripts and Hinglish/Hindi variants.
+5. Add richer OS-specific executor plugins for Windows, macOS, and Linux.

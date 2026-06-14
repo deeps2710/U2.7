@@ -9,6 +9,7 @@ from pathlib import Path
 
 from ultron27.audit import append_audit_record
 from ultron27.cli import main
+from ultron27.console import format_assistant_response, run_console
 from ultron27.config import load_config
 from ultron27.dataset_quality import DatasetRow, analyze_dataset, build_safety_cases, is_underspecified
 from ultron27.executor import Executor
@@ -16,6 +17,7 @@ from ultron27.llm import LLMPlanner, LLMPlannerError, parse_llm_tool_call
 from ultron27.models import ToolCall
 from ultron27.planner import DatasetPlanner, regex_plan
 from ultron27.policy import decide
+from ultron27.runtime import RuntimeSettings, UltronAssistant
 from ultron27.tools import validate_tool_call
 
 
@@ -303,6 +305,66 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(config.llm_model, "qwen-test")
             self.assertEqual(config.llm_endpoint, "http://localhost:11434")
             self.assertEqual(config.llm_timeout_seconds, 3.0)
+
+    def test_phase5_runtime_reuses_pipeline(self) -> None:
+        settings = RuntimeSettings(
+            dataset_path=Path("data/jarvis_dataset_v2/jarvis_laptop_commands_synthetic_v2.jsonl"),
+            audit_log=Path(".ultron/test-audit.jsonl"),
+            workspace=Path("."),
+            dry_run=True,
+            safe_roots=(Path("."),),
+            app_aliases=None,
+            screenshot_dir=Path(".ultron/screenshots"),
+            planner_mode="rules",
+            llm_model="unused",
+            llm_endpoint="http://localhost:11434",
+            llm_timeout_seconds=1.0,
+            write_audit=False,
+        )
+
+        payload = UltronAssistant(settings).handle("set volume to 40 percent")
+
+        self.assertEqual(payload["tool_call"], {"name": "set_system_volume", "arguments": {"level": 40}})
+        self.assertEqual(payload["policy"]["action"], "allow")
+        self.assertEqual(payload["result"]["status"], "dry_run")
+
+    def test_phase5_text_response_is_human_readable(self) -> None:
+        payload = {
+            "utterance": "set volume to 40 percent",
+            "source": "regex",
+            "confidence": 0.76,
+            "tool_call": {"name": "set_system_volume", "arguments": {"level": 40}},
+            "policy": {"action": "allow", "risk_level": "low"},
+            "result": {"status": "dry_run", "message": "Would set volume to 40%"},
+        }
+
+        response = format_assistant_response(payload)
+
+        self.assertIn("Tool: set_system_volume", response)
+        self.assertIn("Policy: allow", response)
+        self.assertIn("Result: dry_run", response)
+
+    def test_phase5_console_accepts_help_json_and_exit(self) -> None:
+        class FakeAssistant:
+            def handle(self, utterance: str, *, confirmed: bool = False) -> dict:
+                return {
+                    "utterance": utterance,
+                    "source": "regex",
+                    "confidence": 0.76,
+                    "tool_call": {"name": "set_system_volume", "arguments": {"level": 40}},
+                    "policy": {"action": "allow", "risk_level": "low"},
+                    "result": {"status": "dry_run", "message": "Would set volume to 40%"},
+                    "runtime": {"confirmed": confirmed},
+                }
+
+        output = io.StringIO()
+        run_console(FakeAssistant(), input_stream=io.StringIO("/help\n/json set volume to 40 percent\n/exit\n"), output_stream=output)
+
+        text = output.getvalue()
+
+        self.assertIn("Commands:", text)
+        self.assertIn('"tool_call"', text)
+        self.assertIn("Session ended.", text)
 
 
 if __name__ == "__main__":
