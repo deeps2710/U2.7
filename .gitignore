@@ -11,4 +11,5 @@ dist/
 .ultron/
 notes/
 .env
-
+docs/phase1_pdf_preview/
+docs/phase1_report_render/
