@@ -10,6 +10,7 @@ from pathlib import Path
 from ultron27.audit import append_audit_record
 from ultron27.cli import main
 from ultron27.config import load_config
+from ultron27.dataset_quality import DatasetRow, analyze_dataset, build_safety_cases, is_underspecified
 from ultron27.executor import Executor
 from ultron27.models import ToolCall
 from ultron27.planner import DatasetPlanner, regex_plan
@@ -180,6 +181,73 @@ class PipelineTest(unittest.TestCase):
 
         self.assertEqual(timer.tool_call, ToolCall("start_timer", {"duration": "15 minutes"}))
         self.assertEqual(screenshot.tool_call, ToolCall("take_screenshot", {}))
+
+    def test_phase3_dataset_quality_finds_conflicts_and_safety_cases(self) -> None:
+        rows = [
+            DatasetRow(
+                id="1",
+                utterance="find resume documents",
+                intent="search_files",
+                tool_name="search_files",
+                tool_arguments={"query": "resume", "file_type": "pdf", "folder": "Downloads"},
+                risk_level="low",
+                requires_confirmation=False,
+                expected_result="Search results",
+                source="test",
+                language="en",
+                domain="laptop_assistant",
+            ),
+            DatasetRow(
+                id="2",
+                utterance="find resume documents",
+                intent="search_files",
+                tool_name="search_files",
+                tool_arguments={"query": "resume", "file_type": "docx", "folder": "Documents"},
+                risk_level="low",
+                requires_confirmation=False,
+                expected_result="Search results",
+                source="test",
+                language="en",
+                domain="laptop_assistant",
+            ),
+            DatasetRow(
+                id="3",
+                utterance="delete resume.pdf",
+                intent="delete_file",
+                tool_name="delete_file",
+                tool_arguments={"file_name": "resume.pdf"},
+                risk_level="high",
+                requires_confirmation=True,
+                expected_result="Confirmation required",
+                source="test",
+                language="en",
+                domain="laptop_assistant",
+            ),
+        ]
+
+        report = analyze_dataset(rows)
+        safety_cases = build_safety_cases(rows)
+
+        self.assertEqual(report["conflicting_duplicate_groups"], 1)
+        self.assertEqual(report["safety_examples"], 1)
+        self.assertEqual(safety_cases[0]["expected_policy_action"], "confirm")
+
+    def test_phase3_underspecified_search_detection(self) -> None:
+        row = DatasetRow(
+            id="1",
+            utterance="look for assignment documents",
+            intent="search_files",
+            tool_name="search_files",
+            tool_arguments={"query": "assignment", "file_type": "png", "folder": "Videos"},
+            risk_level="low",
+            requires_confirmation=False,
+            expected_result="Search results",
+            source="test",
+            language="en",
+            domain="laptop_assistant",
+        )
+
+        self.assertTrue(is_underspecified(row))
 
 
 if __name__ == "__main__":

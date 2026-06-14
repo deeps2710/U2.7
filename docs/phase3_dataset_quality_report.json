@@ -1,0 +1,781 @@
+{
+  "total_examples": 2500,
+  "unique_utterances": 2319,
+  "duplicate_utterance_groups": 101,
+  "conflicting_duplicate_groups": 101,
+  "underspecified_examples": 879,
+  "safety_examples": 362,
+  "risk_distribution": {
+    "high": 110,
+    "low": 1695,
+    "medium": 678,
+    "none": 17
+  },
+  "tool_distribution_top_10": [
+    [
+      "search_files",
+      936
+    ],
+    [
+      "control_smart_home_device",
+      207
+    ],
+    [
+      "create_calendar_event",
+      162
+    ],
+    [
+      "set_system_volume",
+      154
+    ],
+    [
+      "open_file",
+      142
+    ],
+    [
+      "set_screen_brightness",
+      76
+    ],
+    [
+      "set_reminder",
+      65
+    ],
+    [
+      "open_folder",
+      64
+    ],
+    [
+      "open_application",
+      49
+    ],
+    [
+      "adjust_system_volume",
+      46
+    ]
+  ],
+  "intent_distribution_top_10": [
+    [
+      "search_files",
+      936
+    ],
+    [
+      "create_calendar_event",
+      162
+    ],
+    [
+      "set_volume",
+      154
+    ],
+    [
+      "open_file",
+      142
+    ],
+    [
+      "smart_home_off",
+      104
+    ],
+    [
+      "smart_home_on",
+      103
+    ],
+    [
+      "set_brightness",
+      76
+    ],
+    [
+      "set_reminder",
+      65
+    ],
+    [
+      "open_folder",
+      64
+    ],
+    [
+      "open_app",
+      49
+    ]
+  ],
+  "sample_conflicts": [
+    {
+      "utterance": "jarvis find photo files in Screenshots right now",
+      "count": 2,
+      "labels": [
+        {
+          "id": "6276ab51c4b2",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "jpg",
+            "folder": "Screenshots",
+            "query": "photo"
+          }
+        },
+        {
+          "id": "90ceea65cfd7",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "docx",
+            "folder": "Screenshots",
+            "query": "photo"
+          }
+        }
+      ]
+    },
+    {
+      "utterance": "look for budget documents",
+      "count": 6,
+      "labels": [
+        {
+          "id": "56e7784f6b76",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "jpg",
+            "folder": "Documents",
+            "query": "budget"
+          }
+        },
+        {
+          "id": "68bf9ad168ca",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "xlsx",
+            "folder": "Screenshots",
+            "query": "budget"
+          }
+        },
+        {
+          "id": "e2a8b213945b",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "xlsx",
+            "folder": "Videos",
+            "query": "budget"
+          }
+        },
+        {
+          "id": "2a9795aa705d",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "zip",
+            "folder": "Videos",
+            "query": "budget"
+          }
+        },
+        {
+          "id": "4d40afe9992c",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "py",
+            "folder": "Projects",
+            "query": "budget"
+          }
+        }
+      ]
+    },
+    {
+      "utterance": "could you look for meeting documents right now",
+      "count": 2,
+      "labels": [
+        {
+          "id": "192c565d7436",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "png",
+            "folder": "Desktop",
+            "query": "meeting"
+          }
+        },
+        {
+          "id": "3f236af33d61",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "png",
+            "folder": "Downloads",
+            "query": "meeting"
+          }
+        }
+      ]
+    },
+    {
+      "utterance": "find project report files in Desktop",
+      "count": 2,
+      "labels": [
+        {
+          "id": "dd5846707de0",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "png",
+            "folder": "Desktop",
+            "query": "project report"
+          }
+        },
+        {
+          "id": "a9aa03c68228",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "pdf",
+            "folder": "Desktop",
+            "query": "project report"
+          }
+        }
+      ]
+    },
+    {
+      "utterance": "find budget files in Music",
+      "count": 2,
+      "labels": [
+        {
+          "id": "4fb4140f8ef6",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "zip",
+            "folder": "Music",
+            "query": "budget"
+          }
+        },
+        {
+          "id": "67b8b42398f8",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "py",
+            "folder": "Music",
+            "query": "budget"
+          }
+        }
+      ]
+    },
+    {
+      "utterance": "find presentation files in Downloads",
+      "count": 3,
+      "labels": [
+        {
+          "id": "08d974456382",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "py",
+            "folder": "Downloads",
+            "query": "presentation"
+          }
+        },
+        {
+          "id": "a8d3d60ff809",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "png",
+            "folder": "Downloads",
+            "query": "presentation"
+          }
+        },
+        {
+          "id": "e073989bd386",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "zip",
+            "folder": "Downloads",
+            "query": "presentation"
+          }
+        }
+      ]
+    },
+    {
+      "utterance": "show me png files related to notes",
+      "count": 2,
+      "labels": [
+        {
+          "id": "7d06ea620b6a",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "png",
+            "folder": "Downloads",
+            "query": "notes"
+          }
+        },
+        {
+          "id": "1307fdacc71a",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "png",
+            "folder": "Screenshots",
+            "query": "notes"
+          }
+        }
+      ]
+    },
+    {
+      "utterance": "i need you to look for notes documents",
+      "count": 2,
+      "labels": [
+        {
+          "id": "0e194b46ef22",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "docx",
+            "folder": "Screenshots",
+            "query": "notes"
+          }
+        },
+        {
+          "id": "862377022f57",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "png",
+            "folder": "Documents",
+            "query": "notes"
+          }
+        }
+      ]
+    },
+    {
+      "utterance": "look for assignment documents",
+      "count": 7,
+      "labels": [
+        {
+          "id": "8898a8b40de8",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "py",
+            "folder": "Projects",
+            "query": "assignment"
+          }
+        },
+        {
+          "id": "68f53627e366",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "pptx",
+            "folder": "Videos",
+            "query": "assignment"
+          }
+        },
+        {
+          "id": "cdfb967a3e34",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "png",
+            "folder": "Videos",
+            "query": "assignment"
+          }
+        },
+        {
+          "id": "f669b5ba1777",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "pptx",
+            "folder": "Documents",
+            "query": "assignment"
+          }
+        },
+        {
+          "id": "3284fcc399b1",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "jpg",
+            "folder": "Projects",
+            "query": "assignment"
+          }
+        }
+      ]
+    },
+    {
+      "utterance": "find photo files in Projects",
+      "count": 3,
+      "labels": [
+        {
+          "id": "967e8d9537e5",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "zip",
+            "folder": "Projects",
+            "query": "photo"
+          }
+        },
+        {
+          "id": "97d9c6a6b5cb",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "py",
+            "folder": "Projects",
+            "query": "photo"
+          }
+        },
+        {
+          "id": "6d47c4e02e8d",
+          "intent": "search_files",
+          "tool_name": "search_files",
+          "tool_arguments": {
+            "file_type": "docx",
+            "folder": "Projects",
+            "query": "photo"
+          }
+        }
+      ]
+    }
+  ],
+  "sample_underspecified": [
+    {
+      "id": "439a9c74949d",
+      "utterance": "hey jarvis find presentation files in Documents",
+      "intent": "search_files",
+      "tool_name": "search_files",
+      "tool_arguments": {
+        "file_type": "png",
+        "folder": "Documents",
+        "query": "presentation"
+      },
+      "risk_level": "low",
+      "requires_confirmation": false,
+      "expected_result": "Search results for presentation",
+      "source": "synthetic_paraphrase_wrapper",
+      "language": "en",
+      "domain": "laptop_assistant"
+    },
+    {
+      "id": "e77231ad842d",
+      "utterance": "could you look for script documents quickly",
+      "intent": "search_files",
+      "tool_name": "search_files",
+      "tool_arguments": {
+        "file_type": "pdf",
+        "folder": "Videos",
+        "query": "script"
+      },
+      "risk_level": "low",
+      "requires_confirmation": false,
+      "expected_result": "Search results for script",
+      "source": "synthetic_paraphrase_wrapper",
+      "language": "en",
+      "domain": "laptop_assistant"
+    },
+    {
+      "id": "99a5a0cd3a19",
+      "utterance": "could you look for presentation documents when possible",
+      "intent": "search_files",
+      "tool_name": "search_files",
+      "tool_arguments": {
+        "file_type": "zip",
+        "folder": "Screenshots",
+        "query": "presentation"
+      },
+      "risk_level": "low",
+      "requires_confirmation": false,
+      "expected_result": "Search results for presentation",
+      "source": "synthetic_paraphrase_wrapper",
+      "language": "en",
+      "domain": "laptop_assistant"
+    },
+    {
+      "id": "6276ab51c4b2",
+      "utterance": "jarvis find photo files in Screenshots right now",
+      "intent": "search_files",
+      "tool_name": "search_files",
+      "tool_arguments": {
+        "file_type": "jpg",
+        "folder": "Screenshots",
+        "query": "photo"
+      },
+      "risk_level": "low",
+      "requires_confirmation": false,
+      "expected_result": "Search results for photo",
+      "source": "synthetic_paraphrase_wrapper",
+      "language": "en",
+      "domain": "laptop_assistant"
+    },
+    {
+      "id": "62a008b10d98",
+      "utterance": "could you find assignment files in Videos when possible",
+      "intent": "search_files",
+      "tool_name": "search_files",
+      "tool_arguments": {
+        "file_type": "pptx",
+        "folder": "Videos",
+        "query": "assignment"
+      },
+      "risk_level": "low",
+      "requires_confirmation": false,
+      "expected_result": "Search results for assignment",
+      "source": "synthetic_paraphrase_wrapper",
+      "language": "en",
+      "domain": "laptop_assistant"
+    },
+    {
+      "id": "b5a0fef3bc97",
+      "utterance": "please find invoice files in Videos for me",
+      "intent": "search_files",
+      "tool_name": "search_files",
+      "tool_arguments": {
+        "file_type": "pptx",
+        "folder": "Videos",
+        "query": "invoice"
+      },
+      "risk_level": "low",
+      "requires_confirmation": false,
+      "expected_result": "Search results for invoice",
+      "source": "synthetic_paraphrase_wrapper",
+      "language": "en",
+      "domain": "laptop_assistant"
+    },
+    {
+      "id": "56e7784f6b76",
+      "utterance": "look for budget documents",
+      "intent": "search_files",
+      "tool_name": "search_files",
+      "tool_arguments": {
+        "file_type": "jpg",
+        "folder": "Documents",
+        "query": "budget"
+      },
+      "risk_level": "low",
+      "requires_confirmation": false,
+      "expected_result": "Search results for budget",
+      "source": "synthetic_template",
+      "language": "en",
+      "domain": "laptop_assistant"
+    },
+    {
+      "id": "ba0cb0502b36",
+      "utterance": "show me resume.py",
+      "intent": "open_file",
+      "tool_name": "open_file",
+      "tool_arguments": {
+        "file_name": "resume.py"
+      },
+      "risk_level": "medium",
+      "requires_confirmation": false,
+      "expected_result": "resume.py opened",
+      "source": "synthetic_template",
+      "language": "en",
+      "domain": "laptop_assistant"
+    },
+    {
+      "id": "f0a477836963",
+      "utterance": "can you find budget files in Videos please",
+      "intent": "search_files",
+      "tool_name": "search_files",
+      "tool_arguments": {
+        "file_type": "zip",
+        "folder": "Videos",
+        "query": "budget"
+      },
+      "risk_level": "low",
+      "requires_confirmation": false,
+      "expected_result": "Search results for budget",
+      "source": "synthetic_paraphrase_wrapper",
+      "language": "en",
+      "domain": "laptop_assistant"
+    },
+    {
+      "id": "38d218c0d73b",
+      "utterance": "i need you to show me txt files related to meeting please",
+      "intent": "search_files",
+      "tool_name": "search_files",
+      "tool_arguments": {
+        "file_type": "txt",
+        "folder": "Desktop",
+        "query": "meeting"
+      },
+      "risk_level": "low",
+      "requires_confirmation": false,
+      "expected_result": "Search results for meeting",
+      "source": "synthetic_paraphrase_wrapper",
+      "language": "en",
+      "domain": "laptop_assistant"
+    }
+  ],
+  "sample_safety_cases": [
+    {
+      "id": "199c792ad5e6",
+      "utterance": "jarvis schedule class lecture on 25 June at 7 pm when possible",
+      "intent": "create_calendar_event",
+      "tool_name": "create_calendar_event",
+      "tool_arguments": {
+        "date": "on 25 June",
+        "time": "at 7 pm",
+        "title": "class lecture"
+      },
+      "risk_level": "medium",
+      "requires_confirmation": true,
+      "expected_result": "Calendar event confirmation required",
+      "source": "synthetic_paraphrase_wrapper",
+      "language": "en",
+      "domain": "laptop_assistant"
+    },
+    {
+      "id": "c0bfdc0a8bd9",
+      "utterance": "schedule study session tomorrow at 9:30 am",
+      "intent": "create_calendar_event",
+      "tool_name": "create_calendar_event",
+      "tool_arguments": {
+        "date": "tomorrow",
+        "time": "at 9:30 am",
+        "title": "study session"
+      },
+      "risk_level": "medium",
+      "requires_confirmation": true,
+      "expected_result": "Calendar event confirmation required",
+      "source": "synthetic_template",
+      "language": "en",
+      "domain": "laptop_assistant"
+    },
+    {
+      "id": "fc2bd83e1a51",
+      "utterance": "can you schedule birthday call on Friday at 9:30 am quickly",
+      "intent": "create_calendar_event",
+      "tool_name": "create_calendar_event",
+      "tool_arguments": {
+        "date": "on Friday",
+        "time": "at 9:30 am",
+        "title": "birthday call"
+      },
+      "risk_level": "medium",
+      "requires_confirmation": true,
+      "expected_result": "Calendar event confirmation required",
+      "source": "synthetic_paraphrase_wrapper",
+      "language": "en",
+      "domain": "laptop_assistant"
+    },
+    {
+      "id": "e3b78d220a46",
+      "utterance": "i need you to schedule project review this weekend at 7 pm",
+      "intent": "create_calendar_event",
+      "tool_name": "create_calendar_event",
+      "tool_arguments": {
+        "date": "this weekend",
+        "time": "at 7 pm",
+        "title": "project review"
+      },
+      "risk_level": "medium",
+      "requires_confirmation": true,
+      "expected_result": "Calendar event confirmation required",
+      "source": "synthetic_paraphrase_wrapper",
+      "language": "en",
+      "domain": "laptop_assistant"
+    },
+    {
+      "id": "823d1b8397c9",
+      "utterance": "can you schedule birthday call next week tomorrow morning right now",
+      "intent": "create_calendar_event",
+      "tool_name": "create_calendar_event",
+      "tool_arguments": {
+        "date": "next week",
+        "time": "tomorrow morning",
+        "title": "birthday call"
+      },
+      "risk_level": "medium",
+      "requires_confirmation": true,
+      "expected_result": "Calendar event confirmation required",
+      "source": "synthetic_paraphrase_wrapper",
+      "language": "en",
+      "domain": "laptop_assistant"
+    },
+    {
+      "id": "62dcc245ef4f",
+      "utterance": "i need you to schedule study session on Friday at 9:30 am when possible",
+      "intent": "create_calendar_event",
+      "tool_name": "create_calendar_event",
+      "tool_arguments": {
+        "date": "on Friday",
+        "time": "at 9:30 am",
+        "title": "study session"
+      },
+      "risk_level": "medium",
+      "requires_confirmation": true,
+      "expected_result": "Calendar event confirmation required",
+      "source": "synthetic_paraphrase_wrapper",
+      "language": "en",
+      "domain": "laptop_assistant"
+    },
+    {
+      "id": "4f8bfe92a8db",
+      "utterance": "schedule class lecture on Friday in 20 minutes",
+      "intent": "create_calendar_event",
+      "tool_name": "create_calendar_event",
+      "tool_arguments": {
+        "date": "on Friday",
+        "time": "in 20 minutes",
+        "title": "class lecture"
+      },
+      "risk_level": "medium",
+      "requires_confirmation": true,
+      "expected_result": "Calendar event confirmation required",
+      "source": "synthetic_template",
+      "language": "en",
+      "domain": "laptop_assistant"
+    },
+    {
+      "id": "2dc5079bf68b",
+      "utterance": "schedule team meeting on 25 June tonight",
+      "intent": "create_calendar_event",
+      "tool_name": "create_calendar_event",
+      "tool_arguments": {
+        "date": "on 25 June",
+        "time": "tonight",
+        "title": "team meeting"
+      },
+      "risk_level": "medium",
+      "requires_confirmation": true,
+      "expected_result": "Calendar event confirmation required",
+      "source": "synthetic_template",
+      "language": "en",
+      "domain": "laptop_assistant"
+    },
+    {
+      "id": "8d660fbe1d07",
+      "utterance": "could you send an email to Mom saying I will share the resume soon for me",
+      "intent": "send_email",
+      "tool_name": "send_email",
+      "tool_arguments": {
+        "message": "I will share the resume soon",
+        "recipient": "Mom"
+      },
+      "risk_level": "high",
+      "requires_confirmation": true,
+      "expected_result": "Send email confirmation required",
+      "source": "synthetic_paraphrase_wrapper",
+      "language": "en",
+      "domain": "laptop_assistant"
+    },
+    {
+      "id": "b58934cef292",
+      "utterance": "schedule team meeting on Friday at 7 pm",
+      "intent": "create_calendar_event",
+      "tool_name": "create_calendar_event",
+      "tool_arguments": {
+        "date": "on Friday",
+        "time": "at 7 pm",
+        "title": "team meeting"
+      },
+      "risk_level": "medium",
+      "requires_confirmation": true,
+      "expected_result": "Calendar event confirmation required",
+      "source": "synthetic_template",
+      "language": "en",
+      "domain": "laptop_assistant"
+    }
+  ]
+}

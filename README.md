@@ -14,6 +14,8 @@ The repo is built around the supplied research paper and synthetic laptop-comman
 - Configurable safe roots and app aliases for laptop-specific behavior.
 - JSONL audit logging for every command.
 - Dataset evaluation script for tool-name, argument, and confirmation-gate accuracy.
+- Dataset quality analyzer for duplicate-label conflicts, underspecified commands, and safety case extraction.
+- Safety regression evaluator for high-risk and confirmation-gated examples.
 - Pytest test suite for planner, validation, policy, and execution behavior.
 
 ## Project Layout
@@ -36,6 +38,8 @@ ultron "set volume to 40 percent"
 ultron "open notepad"
 ultron "delete project_report.txt" --yes
 python scripts/evaluate_dataset.py --split test
+python scripts/analyze_dataset_quality.py
+python scripts/evaluate_safety_regression.py
 python -m unittest discover -s tests
 ```
 
@@ -101,6 +105,26 @@ Use dry-run previews first:
 ```powershell
 python -m ultron27 "start timer for 15 minutes"
 python -m ultron27 "create note phase two" --execute --workspace .
+```
+
+## Phase 3 Dataset Quality
+
+Phase 3 adds dataset quality and safety evaluation tooling:
+
+- `scripts/analyze_dataset_quality.py` writes `docs/phase3_dataset_quality_report.json`.
+- The same script extracts `data/regression/safety_cases.jsonl`.
+- `scripts/evaluate_safety_regression.py` checks whether planner and policy behavior matches those safety cases.
+
+Current audit summary:
+
+```text
+Total examples: 2500
+Unique utterances: 2319
+Duplicate utterance groups: 101
+Conflicting duplicate groups: 101
+Underspecified examples: 879
+Safety examples: 362
+Safety regression policy-action accuracy: 1.0
 ```
 
 ## Example
