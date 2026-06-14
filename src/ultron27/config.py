@@ -22,6 +22,9 @@ class UltronConfig:
     audit_log: Path = DEFAULT_AUDIT_LOG
     dry_run: bool = True
     workspace: Path = Path(".")
+    safe_roots: tuple[Path, ...] = (Path("."),)
+    app_aliases: dict[str, str] | None = None
+    screenshot_dir: Path = Path(".ultron/screenshots")
 
 
 def load_config(
@@ -73,6 +76,12 @@ def _merge_json_config(config: UltronConfig, path: Path) -> UltronConfig:
         updates["dry_run"] = _expect_bool(raw, "dry_run")
     if "workspace" in raw:
         updates["workspace"] = _resolve_path(_expect_string(raw, "workspace"), base)
+    if "safe_roots" in raw:
+        updates["safe_roots"] = tuple(_resolve_path(Path(item), base) for item in _expect_string_list(raw, "safe_roots"))
+    if "app_aliases" in raw:
+        updates["app_aliases"] = _expect_string_mapping(raw, "app_aliases")
+    if "screenshot_dir" in raw:
+        updates["screenshot_dir"] = _resolve_path(_expect_string(raw, "screenshot_dir"), base)
     return replace(config, **updates)
 
 
@@ -86,6 +95,10 @@ def _merge_env_config(config: UltronConfig, env: Mapping[str, str], base_dir: Pa
         updates["dry_run"] = parse_bool(env["ULTRON_DRY_RUN"])
     if "ULTRON_WORKSPACE" in env:
         updates["workspace"] = _resolve_path(Path(env["ULTRON_WORKSPACE"]), base_dir)
+    if "ULTRON_SAFE_ROOTS" in env:
+        updates["safe_roots"] = tuple(_resolve_path(Path(item.strip()), base_dir) for item in env["ULTRON_SAFE_ROOTS"].split(";") if item.strip())
+    if "ULTRON_SCREENSHOT_DIR" in env:
+        updates["screenshot_dir"] = _resolve_path(Path(env["ULTRON_SCREENSHOT_DIR"]), base_dir)
     return replace(config, **updates)
 
 
@@ -117,3 +130,17 @@ def _expect_bool(raw: dict[str, object], key: str) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"{key} must be true or false")
     return value
+
+
+def _expect_string_list(raw: dict[str, object], key: str) -> list[str]:
+    value = raw[key]
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"{key} must be a list of string paths")
+    return value
+
+
+def _expect_string_mapping(raw: dict[str, object], key: str) -> dict[str, str]:
+    value = raw[key]
+    if not isinstance(value, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()):
+        raise ValueError(f"{key} must be an object with string keys and values")
+    return dict(value)

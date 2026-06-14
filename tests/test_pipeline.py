@@ -131,6 +131,56 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(result.status, "not_implemented")
         self.assertIn("intentionally not implemented", result.message)
 
+    def test_phase2_create_note_writes_inside_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            result = Executor(dry_run=False, workspace=workspace).execute(
+                ToolCall("create_note", {"title": "phase two", "content": "real low-risk write"})
+            )
+
+            note_path = workspace / "notes" / "phase_two.md"
+
+            self.assertEqual(result.status, "success")
+            self.assertTrue(note_path.exists())
+            self.assertEqual(note_path.read_text(encoding="utf-8").strip(), "real low-risk write")
+
+    def test_phase2_search_files_respects_safe_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            allowed = workspace / "allowed"
+            blocked = workspace / "blocked"
+            allowed.mkdir()
+            blocked.mkdir()
+            (allowed / "resume.txt").write_text("ok", encoding="utf-8")
+            (blocked / "resume.txt").write_text("no", encoding="utf-8")
+
+            result = Executor(dry_run=False, workspace=workspace, safe_roots=(allowed,)).execute(
+                ToolCall("search_files", {"query": "resume", "file_type": "txt"})
+            )
+
+            self.assertEqual(result.status, "success")
+            self.assertEqual(result.data["matches"], [str((allowed / "resume.txt").resolve())])
+
+    def test_phase2_reminder_and_timer_are_saved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            executor = Executor(dry_run=False, workspace=workspace)
+
+            reminder = executor.execute(ToolCall("set_reminder", {"task": "check email", "time": "7 pm"}))
+            timer = executor.execute(ToolCall("start_timer", {"duration": "15 minutes"}))
+
+            self.assertEqual(reminder.status, "success")
+            self.assertEqual(timer.status, "success")
+            self.assertTrue((workspace / ".ultron" / "reminders.jsonl").exists())
+            self.assertTrue((workspace / ".ultron" / "timers.jsonl").exists())
+
+    def test_phase2_planner_handles_timer_and_screenshot(self) -> None:
+        timer = regex_plan("start timer for 15 minutes")
+        screenshot = regex_plan("take a screenshot")
+
+        self.assertEqual(timer.tool_call, ToolCall("start_timer", {"duration": "15 minutes"}))
+        self.assertEqual(screenshot.tool_call, ToolCall("take_screenshot", {}))
+
 
 if __name__ == "__main__":
     unittest.main()

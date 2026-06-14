@@ -13,6 +13,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "control_smart_home_device": ToolSpec("control_smart_home_device", "Switch a smart-home device on or off.", RiskLevel.MEDIUM, ("device", "state"), ("room",)),
     "create_calendar_event": ToolSpec("create_calendar_event", "Create a calendar event draft.", RiskLevel.MEDIUM, ("title", "date", "time"), requires_confirmation=True),
     "create_note": ToolSpec("create_note", "Create a local note.", RiskLevel.LOW, ("title",), ("content",)),
+    "copy_to_clipboard": ToolSpec("copy_to_clipboard", "Copy text to the system clipboard.", RiskLevel.LOW, ("text",)),
     "delete_file": ToolSpec("delete_file", "Delete a file after confirmation.", RiskLevel.HIGH, ("file_name",), ("mode",), requires_confirmation=True),
     "draft_email": ToolSpec("draft_email", "Draft an email without sending it.", RiskLevel.MEDIUM, ("recipient",), ("subject",), requires_confirmation=True),
     "lock_screen": ToolSpec("lock_screen", "Lock the current user session.", RiskLevel.MEDIUM, requires_confirmation=True),
@@ -26,6 +27,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "pause_media": ToolSpec("pause_media", "Pause media playback.", RiskLevel.LOW, ("action",)),
     "play_music": ToolSpec("play_music", "Play music for a query.", RiskLevel.LOW, ("query",)),
     "previous_media_track": ToolSpec("previous_media_track", "Go to the previous media track.", RiskLevel.LOW),
+    "read_clipboard": ToolSpec("read_clipboard", "Read text from the system clipboard.", RiskLevel.LOW),
     "rename_file": ToolSpec("rename_file", "Rename a file after confirmation.", RiskLevel.MEDIUM, ("old_name", "new_name"), requires_confirmation=True),
     "restart_system": ToolSpec("restart_system", "Restart the computer.", RiskLevel.HIGH, requires_confirmation=True),
     "run_script": ToolSpec("run_script", "Run a preapproved local script.", RiskLevel.HIGH, ("script_name",), requires_confirmation=True),
@@ -89,4 +91,3 @@ def _validate_basic_types(arguments: dict[str, Any], errors: list[str]) -> None:
                 errors.append(f"{key} must be numeric")
         elif value is not None and key not in {"level", "delta", "value", "mute", "enabled"} and not isinstance(value, str):
             errors.append(f"{key} must be a string")
-

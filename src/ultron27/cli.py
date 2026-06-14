@@ -56,7 +56,13 @@ def main(argv: list[str] | None = None) -> None:
     validation = validate_tool_call(plan.tool_call)
     decision = decide(plan, validation, confirmed=args.yes)
 
-    executor = Executor(dry_run=dry_run, workspace=workspace)
+    executor = Executor(
+        dry_run=dry_run,
+        workspace=workspace,
+        safe_roots=config.safe_roots,
+        app_aliases=config.app_aliases or {},
+        screenshot_dir=config.screenshot_dir,
+    )
     if decision.action == "allow":
         result = executor.execute(plan.tool_call)
     elif decision.action == "confirm":
@@ -85,13 +91,14 @@ def main(argv: list[str] | None = None) -> None:
             "confirmed": args.yes,
             "dataset_path": str(dataset_path),
             "workspace": str(workspace),
+            "safe_roots": [str(root) for root in config.safe_roots],
             "python": sys.version.split()[0],
             "platform": sys.platform,
         },
     }
     if not args.no_audit:
         append_audit_record(payload, audit_log)
-    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    print(json.dumps(payload, indent=2, ensure_ascii=True))
 
 
 if __name__ == "__main__":

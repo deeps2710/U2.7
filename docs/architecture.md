@@ -12,7 +12,7 @@ wake word -> VAD -> STT -> planner -> tool call -> validation
 The current repository implements the middle of the pipeline:
 
 ```text
-text command -> planner -> validator -> policy -> dry-run executor -> audit log
+text command -> planner -> validator -> policy -> safe executor -> audit log
 ```
 
 ## Core Principles
@@ -23,6 +23,8 @@ text command -> planner -> validator -> policy -> dry-run executor -> audit log
 - Destructive actions are previewed, not blindly executed.
 - Every decision is logged for evaluation and improvement.
 - Voice and LLM components are adapters around the same safe tool layer.
+- Real execution is limited to low-risk, allowlisted tools.
+- File tools are restricted to configured safe roots.
 
 ## Risk Levels
 
@@ -33,6 +35,22 @@ text command -> planner -> validator -> policy -> dry-run executor -> audit log
 | medium | draft email, move file, smart-home control | confirmation when configured |
 | high | delete file, send email, run script, shutdown | confirmation required |
 | blocked | arbitrary shell, credential access | rejected |
+
+## Phase 2 Execution Boundary
+
+Phase 2 introduces real low-risk execution while keeping destructive actions blocked or preview-only.
+
+Implemented low-risk execution includes:
+
+- note creation and append operations under the configured workspace,
+- reminder and timer JSONL records under `.ultron/`,
+- safe-root file search,
+- safe-root file and folder opening,
+- application launch through aliases,
+- clipboard helpers on Windows,
+- screenshot capture when Pillow/ImageGrab is available.
+
+High-risk operations such as file deletion, sending email, script execution, shutdown, and restart remain non-destructive. Even if the policy receives confirmation, the executor returns `not_implemented` for destructive actions.
 
 ## Dataset Role
 
@@ -45,4 +63,3 @@ The provided dataset is used for:
 - unsafe-action refusal testing.
 
 It should not be treated as execution authority. Dataset rows are examples for learning and evaluation, not commands to run without policy checks.
-
