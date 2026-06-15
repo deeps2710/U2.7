@@ -30,6 +30,16 @@ class UltronConfig:
     llm_model: str = "qwen2.5:7b-instruct"
     llm_endpoint: str = "http://localhost:11434"
     llm_timeout_seconds: float = 8.0
+    voice_stt_provider: str = "text_payload"
+    voice_tts_provider: str = "browser_speech_synthesis"
+    voice_stt_model_path: Path | None = None
+    voice_tts_model_path: Path | None = None
+    voice_tts_voice_path: Path | None = None
+    voice_device: str = "cpu"
+    voice_identity: str = "ULTRON"
+    voice_rate: float = 0.92
+    voice_pitch: float = 0.72
+    voice_volume: float = 0.95
 
 
 def load_config(
@@ -97,6 +107,34 @@ def _merge_json_config(config: UltronConfig, path: Path) -> UltronConfig:
         updates["llm_endpoint"] = _expect_plain_string(raw, "llm_endpoint")
     if "llm_timeout_seconds" in raw:
         updates["llm_timeout_seconds"] = _expect_number(raw, "llm_timeout_seconds")
+    if "voice_stt_provider" in raw:
+        updates["voice_stt_provider"] = _expect_choice(
+            raw,
+            "voice_stt_provider",
+            {"text_payload", "browser", "faster_whisper", "whisper_cpp", "mock"},
+        )
+    if "voice_tts_provider" in raw:
+        updates["voice_tts_provider"] = _expect_choice(
+            raw,
+            "voice_tts_provider",
+            {"browser_speech_synthesis", "browser", "piper", "pyttsx3", "mock"},
+        )
+    if "voice_stt_model_path" in raw:
+        updates["voice_stt_model_path"] = _resolve_optional_path(raw, "voice_stt_model_path", base)
+    if "voice_tts_model_path" in raw:
+        updates["voice_tts_model_path"] = _resolve_optional_path(raw, "voice_tts_model_path", base)
+    if "voice_tts_voice_path" in raw:
+        updates["voice_tts_voice_path"] = _resolve_optional_path(raw, "voice_tts_voice_path", base)
+    if "voice_device" in raw:
+        updates["voice_device"] = _expect_choice(raw, "voice_device", {"cpu", "cuda", "auto"})
+    if "voice_identity" in raw:
+        updates["voice_identity"] = _expect_plain_string(raw, "voice_identity")
+    if "voice_rate" in raw:
+        updates["voice_rate"] = _expect_number(raw, "voice_rate")
+    if "voice_pitch" in raw:
+        updates["voice_pitch"] = _expect_number(raw, "voice_pitch")
+    if "voice_volume" in raw:
+        updates["voice_volume"] = _expect_number(raw, "voice_volume")
     return replace(config, **updates)
 
 
@@ -124,6 +162,34 @@ def _merge_env_config(config: UltronConfig, env: Mapping[str, str], base_dir: Pa
         updates["llm_endpoint"] = env["ULTRON_LLM_ENDPOINT"]
     if "ULTRON_LLM_TIMEOUT_SECONDS" in env:
         updates["llm_timeout_seconds"] = float(env["ULTRON_LLM_TIMEOUT_SECONDS"])
+    if "ULTRON_STT_PROVIDER" in env:
+        updates["voice_stt_provider"] = _parse_choice(
+            env["ULTRON_STT_PROVIDER"],
+            "ULTRON_STT_PROVIDER",
+            {"text_payload", "browser", "faster_whisper", "whisper_cpp", "mock"},
+        )
+    if "ULTRON_TTS_PROVIDER" in env:
+        updates["voice_tts_provider"] = _parse_choice(
+            env["ULTRON_TTS_PROVIDER"],
+            "ULTRON_TTS_PROVIDER",
+            {"browser_speech_synthesis", "browser", "piper", "pyttsx3", "mock"},
+        )
+    if "ULTRON_STT_MODEL_PATH" in env:
+        updates["voice_stt_model_path"] = _resolve_path(Path(env["ULTRON_STT_MODEL_PATH"]), base_dir)
+    if "ULTRON_TTS_MODEL_PATH" in env:
+        updates["voice_tts_model_path"] = _resolve_path(Path(env["ULTRON_TTS_MODEL_PATH"]), base_dir)
+    if "ULTRON_TTS_VOICE_PATH" in env:
+        updates["voice_tts_voice_path"] = _resolve_path(Path(env["ULTRON_TTS_VOICE_PATH"]), base_dir)
+    if "ULTRON_VOICE_DEVICE" in env:
+        updates["voice_device"] = _parse_choice(env["ULTRON_VOICE_DEVICE"], "ULTRON_VOICE_DEVICE", {"cpu", "cuda", "auto"})
+    if "ULTRON_VOICE_IDENTITY" in env:
+        updates["voice_identity"] = env["ULTRON_VOICE_IDENTITY"]
+    if "ULTRON_VOICE_RATE" in env:
+        updates["voice_rate"] = float(env["ULTRON_VOICE_RATE"])
+    if "ULTRON_VOICE_PITCH" in env:
+        updates["voice_pitch"] = float(env["ULTRON_VOICE_PITCH"])
+    if "ULTRON_VOICE_VOLUME" in env:
+        updates["voice_volume"] = float(env["ULTRON_VOICE_VOLUME"])
     return replace(config, **updates)
 
 
@@ -155,6 +221,15 @@ def _expect_plain_string(raw: dict[str, object], key: str) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{key} must be a string")
     return value
+
+
+def _resolve_optional_path(raw: dict[str, object], key: str, base_dir: Path) -> Path | None:
+    value = raw[key]
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{key} must be a string path or null")
+    return _resolve_path(Path(value), base_dir)
 
 
 def _expect_bool(raw: dict[str, object], key: str) -> bool:

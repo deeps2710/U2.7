@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 from .brain import UltronBrain
 from .config import load_config
 from .runtime import RuntimeSettings, UltronAssistant
-from .voice import VoiceSession
+from .voice import VoiceSession, build_voice_session
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -77,6 +77,16 @@ class WebState:
     def voice_status(self) -> dict[str, Any]:
         return self.snapshot({"status": "ok", **self.voice.snapshot()})
 
+    def voice_providers(self) -> dict[str, Any]:
+        return self.snapshot({"status": "ok", **self.voice.providers_status()})
+
+    def voice_test_stt(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.snapshot(self.voice.test_stt(payload))
+
+    def voice_test_tts(self, payload: dict[str, Any]) -> dict[str, Any]:
+        text = str(payload.get("text") or "ULTRON voice provider test.")
+        return self.snapshot(self.voice.test_tts(text))
+
     def speak(self, payload: dict[str, Any]) -> dict[str, Any]:
         action = str(payload.get("action", "speak"))
         if action == "stop":
@@ -129,12 +139,12 @@ def build_state(args: argparse.Namespace) -> WebState:
         llm_model=args.llm_model,
         llm_endpoint=args.llm_endpoint,
     )
-    return WebState(UltronBrain(UltronAssistant(settings)))
+    return WebState(UltronBrain(UltronAssistant(settings)), voice=build_voice_session(config))
 
 
 def make_handler(state: WebState, web_root: Path = WEB_ROOT) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
-        server_version = "UltronPhase8/1.0"
+        server_version = "UltronPhase9/1.0"
 
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
@@ -146,6 +156,9 @@ def make_handler(state: WebState, web_root: Path = WEB_ROOT) -> type[BaseHTTPReq
                 return
             if parsed.path == "/api/voice/status":
                 self._json(state.voice_status())
+                return
+            if parsed.path == "/api/voice/providers":
+                self._json(state.voice_providers())
                 return
             self._serve_static(parsed.path)
 
@@ -164,6 +177,12 @@ def make_handler(state: WebState, web_root: Path = WEB_ROOT) -> type[BaseHTTPReq
                 return
             if parsed.path == "/api/voice/transcribe":
                 self._json(state.voice_transcribe(body))
+                return
+            if parsed.path == "/api/voice/test-stt":
+                self._json(state.voice_test_stt(body))
+                return
+            if parsed.path == "/api/voice/test-tts":
+                self._json(state.voice_test_tts(body))
                 return
             if parsed.path == "/api/speak":
                 self._json(state.speak(body))

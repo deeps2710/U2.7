@@ -20,5 +20,15 @@
   "llm_provider": "ollama",
   "llm_model": "qwen2.5:7b-instruct",
   "llm_endpoint": "http://localhost:11434",
-  "llm_timeout_seconds": 8
+  "llm_timeout_seconds": 8,
+  "voice_stt_provider": "browser",
+  "voice_tts_provider": "browser_speech_synthesis",
+  "voice_stt_model_path": null,
+  "voice_tts_model_path": null,
+  "voice_tts_voice_path": null,
+  "voice_device": "cpu",
+  "voice_identity": "ULTRON",
+  "voice_rate": 0.92,
+  "voice_pitch": 0.72,
+  "voice_volume": 0.95
 }

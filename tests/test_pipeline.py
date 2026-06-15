@@ -23,7 +23,7 @@ from ultron27.planner import DatasetPlanner, regex_plan
 from ultron27.policy import decide
 from ultron27.runtime import RuntimeSettings, UltronAssistant
 from ultron27.tools import validate_tool_call
-from ultron27.voice import MockTTS, VoiceSession, strip_wake_word
+from ultron27.voice import MockSTT, MockTTS, VoiceProviderConfig, VoiceSession, build_voice_session, strip_wake_word
 from ultron27.web_server import WebState, make_handler
 
 
@@ -718,6 +718,137 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(started["visual_state"], "listening")
         self.assertEqual(transcribed["task"]["steps"][0]["tool_call"]["name"], "create_note")
         self.assertEqual(status["status"], "ok")
+
+    def test_phase9_config_accepts_voice_provider_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "ultron.config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "voice_stt_provider": "faster_whisper",
+                        "voice_tts_provider": "piper",
+                        "voice_stt_model_path": "models/whisper",
+                        "voice_tts_model_path": "models/piper.onnx",
+                        "voice_tts_voice_path": "models/piper.json",
+                        "voice_device": "cpu",
+                        "voice_identity": "ULTRON-local",
+                        "voice_rate": 0.86,
+                        "voice_pitch": 0.7,
+                        "voice_volume": 0.8,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(
+                config_path,
+                environ={"ULTRON_TTS_PROVIDER": "pyttsx3", "ULTRON_VOICE_RATE": "1.05"},
+                base_dir=root,
+            )
+
+            self.assertEqual(config.voice_stt_provider, "faster_whisper")
+            self.assertEqual(config.voice_tts_provider, "pyttsx3")
+            self.assertEqual(config.voice_stt_model_path, root / "models" / "whisper")
+            self.assertEqual(config.voice_tts_model_path, root / "models" / "piper.onnx")
+            self.assertEqual(config.voice_tts_voice_path, root / "models" / "piper.json")
+            self.assertEqual(config.voice_identity, "ULTRON-local")
+            self.assertEqual(config.voice_rate, 1.05)
+
+    def test_phase9_missing_local_voice_models_fall_back_gracefully(self) -> None:
+        class Config:
+            voice_stt_provider = "faster_whisper"
+            voice_tts_provider = "piper"
+            voice_stt_model_path = None
+            voice_tts_model_path = None
+            voice_tts_voice_path = None
+            voice_device = "cpu"
+            voice_identity = "ULTRON"
+            voice_rate = 0.92
+            voice_pitch = 0.72
+            voice_volume = 0.95
+
+        session = build_voice_session(Config())
+        providers = session.providers_status()
+
+        self.assertEqual(providers["configured"]["stt"], "faster_whisper")
+        self.assertEqual(providers["configured"]["tts"], "piper")
+        self.assertEqual(providers["active"]["stt"], "browser")
+        self.assertEqual(providers["active"]["tts"], "browser_speech_synthesis")
+        self.assertFalse(providers["providers"]["stt"]["available"])
+        self.assertFalse(providers["providers"]["tts"]["available"])
+
+    def test_phase9_mocked_stt_tts_provider_selection(self) -> None:
+        tts = MockTTS()
+        session = VoiceSession(
+            stt=MockSTT("ULTRON, create note provider test"),
+            tts=tts,
+            configured_stt=MockSTT(),
+            configured_tts=tts,
+            provider_config=VoiceProviderConfig(stt_provider="mock", tts_provider="mock", voice_identity="ULTRON-test"),
+        )
+
+        stt_payload = session.test_stt({})
+        tts_payload = session.test_tts("Done.")
+
+        self.assertEqual(stt_payload["transcript"]["text"], "create note provider test")
+        self.assertEqual(stt_payload["transcript"]["provider"], "mock_stt")
+        self.assertEqual(tts_payload["speech"]["provider"], "mock_tts")
+        self.assertEqual(tts.spoken, ["Done."])
+        self.assertEqual(tts_payload["speech"]["voice"], "ULTRON-test")
+
+    def test_phase9_voice_provider_api_endpoints(self) -> None:
+        tts = MockTTS()
+        state = WebState(
+            UltronBrain(UltronAssistant(_test_settings())),
+            voice=VoiceSession(
+                stt=MockSTT("ULTRON, create note api provider"),
+                tts=tts,
+                configured_stt=MockSTT(),
+                configured_tts=tts,
+                provider_config=VoiceProviderConfig(stt_provider="mock", tts_provider="mock"),
+            ),
+        )
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(state))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            providers = json.loads(urlopen(base + "/api/voice/providers", timeout=5).read().decode("utf-8"))
+            stt = json.loads(
+                urlopen(
+                    Request(
+                        base + "/api/voice/test-stt",
+                        data=json.dumps({}).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    ),
+                    timeout=5,
+                )
+                .read()
+                .decode("utf-8")
+            )
+            tts_payload = json.loads(
+                urlopen(
+                    Request(
+                        base + "/api/voice/test-tts",
+                        data=json.dumps({"text": "Provider API test."}).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    ),
+                    timeout=5,
+                )
+                .read()
+                .decode("utf-8")
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        self.assertEqual(providers["active"]["stt"], "mock_stt")
+        self.assertEqual(providers["active"]["tts"], "mock_tts")
+        self.assertEqual(stt["transcript"]["text"], "create note api provider")
+        self.assertEqual(tts_payload["speech"]["provider"], "mock_tts")
 
     def test_phase8_wake_word_is_removed_from_transcript(self) -> None:
         self.assertEqual(strip_wake_word("ULTRON, create note demo"), "create note demo")

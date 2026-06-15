@@ -45,6 +45,21 @@
         <button id="mockVoiceButton" type="button">Mock Voice</button>
       </section>
 
+      <section class="provider-panel" aria-label="Voice provider status">
+        <div>
+          <span>STT</span>
+          <strong id="sttProviderLabel">text_payload</strong>
+          <small id="sttProviderDetail">Ready</small>
+        </div>
+        <div>
+          <span>TTS</span>
+          <strong id="ttsProviderLabel">browser_speech_synthesis</strong>
+          <small id="ttsProviderDetail">Ready</small>
+        </div>
+        <button id="refreshProvidersButton" type="button">Refresh</button>
+        <button id="testProvidersButton" type="button">Test Voice</button>
+      </section>
+
       <section class="command-row" aria-label="Command input">
         <input id="commandInput" type="text" autocomplete="off" placeholder="Type a command for ULTRON..." />
         <button id="sendButton" type="button">Send</button>

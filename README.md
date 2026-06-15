@@ -2,7 +2,7 @@
 
 ULTRON 2.7 is a local-first Jarvis-style laptop assistant MVP. It turns natural-language commands into typed tool calls, validates them, applies a safety policy, and executes them only through an allowlisted tool layer.
 
-The repo is built around the supplied research paper and synthetic laptop-command dataset. The current implementation is text-first so the command, policy, and evaluation loop can become reliable before wake-word, STT, and TTS are added.
+The repo is built around the supplied research paper and synthetic laptop-command dataset. The current implementation keeps command planning, voice input, policy, and execution separated so ULTRON can grow toward a Jarvis-style assistant without giving any model raw shell access.
 
 ## What Works Now
 
@@ -21,6 +21,7 @@ The repo is built around the supplied research paper and synthetic laptop-comman
 - Agentic brain layer for multi-step task planning, safe execution, and non-sensitive memory.
 - Cyberpunk green plasma-sphere web interface backed by the local brain/runtime API.
 - Voice mode with browser speech recognition, speech synthesis, transcript history, mute, push-to-talk, and confirmation controls.
+- Offline-first voice provider layer with faster-whisper, whisper.cpp, Piper, and pyttsx3 adapters plus browser/mock fallbacks.
 - Pytest test suite for planner, validation, policy, and execution behavior.
 
 ## Project Layout
@@ -52,6 +53,7 @@ python -m ultron27 "/plan Create a note called project ideas and add that I shou
 python -m ultron27 "/do Create a note called project ideas and add that I should test voice mode next." --text --execute --workspace .
 python scripts/run_phase7_ui.py --port 8765
 python scripts/run_phase8_voice_ui.py --port 8765
+python scripts/run_phase9_voice_ui.py --port 8765
 python -m unittest discover -s tests
 ```
 
@@ -85,7 +87,17 @@ ULTRON looks for `ultron.config.json` first, then `.ultron/config.json`. You can
   "llm_provider": "ollama",
   "llm_model": "qwen2.5:7b-instruct",
   "llm_endpoint": "http://localhost:11434",
-  "llm_timeout_seconds": 8
+  "llm_timeout_seconds": 8,
+  "voice_stt_provider": "browser",
+  "voice_tts_provider": "browser_speech_synthesis",
+  "voice_stt_model_path": null,
+  "voice_tts_model_path": null,
+  "voice_tts_voice_path": null,
+  "voice_device": "cpu",
+  "voice_identity": "ULTRON",
+  "voice_rate": 0.92,
+  "voice_pitch": 0.72,
+  "voice_volume": 0.95
 }
 ```
 
@@ -98,6 +110,13 @@ $env:ULTRON_SAFE_ROOTS = ".;~/Desktop;~/Documents;~/Downloads"
 $env:ULTRON_PLANNER_MODE = "rules"
 $env:ULTRON_LLM_MODEL = "qwen2.5:7b-instruct"
 $env:ULTRON_LLM_ENDPOINT = "http://localhost:11434"
+$env:ULTRON_STT_PROVIDER = "browser"
+$env:ULTRON_TTS_PROVIDER = "browser_speech_synthesis"
+$env:ULTRON_STT_MODEL_PATH = ".ultron/models/whisper"
+$env:ULTRON_TTS_MODEL_PATH = ".ultron/models/piper.onnx"
+$env:ULTRON_TTS_VOICE_PATH = ".ultron/models/piper.json"
+$env:ULTRON_VOICE_DEVICE = "cpu"
+$env:ULTRON_VOICE_IDENTITY = "ULTRON"
 ```
 
 Useful CLI flags:
@@ -111,7 +130,7 @@ ultron "/do create a note called ideas and add that voice mode is next" --text -
 ultron "/memory" --text
 ultron "/forget last_note" --text
 ultron-ui --port 8765
-python scripts/run_phase8_voice_ui.py --port 8765
+python scripts/run_phase9_voice_ui.py --port 8765
 ultron "create note standup" --workspace .
 ultron "open notepad" --execute
 ultron "delete project_report.txt" --yes
@@ -315,6 +334,36 @@ voice -> STT -> brain/runtime -> typed tool call -> validation -> policy
 
 If microphone/STT is unavailable, typed mode and Mock Voice still work. If TTS is unavailable or muted, subtitles still show the response.
 
+## Phase 9 Offline Voice Providers
+
+Phase 9 strengthens the voice layer with offline-first provider adapters while keeping browser voice as the practical fallback. The browser UI now shows the configured and active STT/TTS providers, and the backend exposes health-check routes for provider readiness.
+
+Run it with:
+
+```powershell
+python scripts/run_phase9_voice_ui.py --port 8765
+```
+
+Provider choices:
+
+- `voice_stt_provider`: `browser`, `text_payload`, `faster_whisper`, `whisper_cpp`, or `mock`.
+- `voice_tts_provider`: `browser_speech_synthesis`, `piper`, `pyttsx3`, or `mock`.
+- `voice_stt_model_path`: local faster-whisper or whisper.cpp model path.
+- `voice_tts_model_path`: local Piper model path.
+- `voice_tts_voice_path`: optional Piper voice config path.
+- `voice_device`: `cpu`, `cuda`, or `auto`.
+- `voice_identity`, `voice_rate`, `voice_pitch`, and `voice_volume`: voice output tuning.
+
+New provider endpoints:
+
+```text
+GET  /api/voice/providers
+POST /api/voice/test-stt
+POST /api/voice/test-tts
+```
+
+If a local STT model, TTS model, Python package, or Piper executable is missing, ULTRON reports the issue and falls back to browser transcript/speech behavior. Typed commands, subtitles, and the safe runtime continue to work.
+
 ## Example
 
 ```powershell
@@ -356,8 +405,8 @@ High-risk operations such as deleting files, sending email, running scripts, res
 
 ## Roadmap
 
-1. Plug in local STT using faster-whisper or whisper.cpp.
-2. Plug in local TTS using Piper or pyttsx3.
-3. Add wake-word and stronger VAD using openWakeWord and Silero VAD.
+1. Install and tune real faster-whisper/whisper.cpp and Piper models for the target laptop.
+2. Add wake-word and stronger VAD using openWakeWord and Silero VAD.
+3. Add streaming partial transcripts and lower-latency speech playback.
 4. Grow the dataset with real corrected transcripts and Hinglish/Hindi variants.
 5. Add richer OS-specific executor plugins for Windows, macOS, and Linux.

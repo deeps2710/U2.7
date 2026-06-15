@@ -54,6 +54,16 @@ voice -> STT adapter -> local API -> brain -> TaskPlan -> safe runtime step(s)
 
 Voice mode is still an input/output layer. It does not change the planner, validator, policy, executor, or audit responsibilities.
 
+Phase 9 replaces the lightweight voice prototype with provider-selected voice adapters:
+
+```text
+browser/local audio -> configured STT provider -> brain/runtime
+-> typed tool call -> validation -> policy -> executor -> audit
+-> response text -> configured TTS provider
+```
+
+Local voice providers are runtime adapters only. They can transcribe audio or synthesize speech, but they cannot execute tools, skip validation, change policy decisions, or access shell execution authority.
+
 ## Core Principles
 
 - Local-first by default.
@@ -68,6 +78,7 @@ Voice mode is still an input/output layer. It does not change the planner, valid
 - The brain is orchestration only; it does not receive raw shell access.
 - Persistent memory rejects obvious sensitive content such as passwords, API keys, tokens, credentials, and secrets.
 - Voice mode requires explicit confirmation phrases for high-risk actions.
+- Voice providers must fail closed into typed/browser fallback rather than crashing or bypassing the runtime.
 
 ## Risk Levels
 
@@ -152,6 +163,33 @@ Voice API endpoints:
 | `GET /api/voice/status` | Return voice state and transcript history. |
 
 High-risk voice commands pause with `waiting_for_confirmation`. The confirmation phrase must be explicit, for example `yes confirm`. Confirmed destructive actions still remain dry-run or not implemented unless a safe executor is later designed.
+
+## Phase 9 Offline Voice Provider Boundary
+
+Phase 9 keeps `src/ultron27/voice.py` as the voice boundary and adds local provider adapters:
+
+| Provider Type | Supported Adapters | Fallback |
+|---|---|---|
+| STT | `faster_whisper`, `whisper_cpp`, `browser`, `text_payload`, `mock` | browser transcript payloads |
+| TTS | `piper`, `pyttsx3`, `browser_speech_synthesis`, `mock` | browser speech synthesis or subtitles |
+
+Provider selection comes from `ultron.config.json` or `ULTRON_*` environment variables. The provider health model records:
+
+- configured provider,
+- active provider,
+- availability,
+- fallback target,
+- readiness detail.
+
+Provider health endpoints:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/voice/providers` | Return configured, active, and health-checked STT/TTS providers. |
+| `POST /api/voice/test-stt` | Test the active STT provider without running a command. |
+| `POST /api/voice/test-tts` | Test the active TTS provider without changing tool state. |
+
+Missing local models, missing Python packages, or missing Piper binaries are reported through health checks and do not crash the web server. The frontend displays active STT/TTS providers so the user can see whether ULTRON is local, browser-backed, or mocked.
 
 ## Dataset Role
 

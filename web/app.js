@@ -14,6 +14,12 @@ const muteToggle = document.getElementById("muteToggle");
 const stopSpeakingButton = document.getElementById("stopSpeakingButton");
 const confirmVoiceButton = document.getElementById("confirmVoiceButton");
 const mockVoiceButton = document.getElementById("mockVoiceButton");
+const sttProviderLabel = document.getElementById("sttProviderLabel");
+const sttProviderDetail = document.getElementById("sttProviderDetail");
+const ttsProviderLabel = document.getElementById("ttsProviderLabel");
+const ttsProviderDetail = document.getElementById("ttsProviderDetail");
+const refreshProvidersButton = document.getElementById("refreshProvidersButton");
+const testProvidersButton = document.getElementById("testProvidersButton");
 const voiceHistory = document.getElementById("voiceHistory");
 const stateButtons = [...document.querySelectorAll("[data-state]")];
 
@@ -42,6 +48,7 @@ let voiceMuted = false;
 let returnTimer = null;
 let recognition = null;
 let recognitionActive = false;
+let providerStatus = null;
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
@@ -137,6 +144,7 @@ scene.add(fill);
 
 setVisualState("idle", { sync: false });
 loadStatus();
+loadProviders();
 setupSpeechRecognition();
 animate();
 
@@ -190,6 +198,8 @@ confirmVoiceButton.addEventListener("click", () => handleVoiceTranscript("yes co
 mockVoiceButton.addEventListener("click", () =>
   handleVoiceTranscript("ULTRON, create a note called demo and write that voice mode is working.")
 );
+refreshProvidersButton.addEventListener("click", loadProviders);
+testProvidersButton.addEventListener("click", testVoiceProviders);
 
 sendButton.addEventListener("click", sendCommand);
 commandInput.addEventListener("keydown", (event) => {
@@ -233,8 +243,42 @@ async function loadStatus() {
     const voicePayload = await fetchJson("/api/voice/status");
     applyVoiceStatus(voicePayload.voice);
     renderHistory(voicePayload.history || []);
+    await loadProviders();
   } catch {
     setSubtitle("ULTRON visual shell loaded. Runtime API pending.");
+  }
+}
+
+async function loadProviders() {
+  try {
+    providerStatus = await fetchJson("/api/voice/providers");
+    applyProviders(providerStatus);
+  } catch {
+    providerStatus = null;
+    sttProviderDetail.textContent = "Runtime API pending";
+    ttsProviderDetail.textContent = "Runtime API pending";
+  }
+}
+
+async function testVoiceProviders() {
+  setVisualState("thinking");
+  setSubtitle("Testing voice providers...");
+  try {
+    const stt = await postJson("/api/voice/test-stt", { transcript: "ULTRON, create note provider test" });
+    const tts = await postJson("/api/voice/test-tts", { text: "ULTRON voice provider test." });
+    providerStatus = tts;
+    applyProviders(tts);
+    const transcript = stt.transcript?.text || "No transcript";
+    const speechStatus = tts.speech?.status || "checked";
+    setSubtitle(`STT: ${transcript}\nTTS: ${speechStatus}`);
+    if (tts.speech?.provider === "browser_speech_synthesis" && !voiceMuted) {
+      await playBrowserSpeech("ULTRON voice provider test.");
+    }
+    setVisualState("speaking");
+    scheduleListeningReturn();
+  } catch {
+    setSubtitle("Voice provider test could not reach the ULTRON runtime.");
+    setVisualState("idle");
   }
 }
 
@@ -330,17 +374,30 @@ async function handleVoiceTranscript(transcript) {
 }
 
 async function speakText(text) {
-  await postJson("/api/speak", { text, muted: voiceMuted });
+  const payload = await postJson("/api/speak", { text, muted: voiceMuted });
+  applyVoiceStatus(payload.voice);
+  if (payload.speech?.provider && providerStatus?.active) {
+    providerStatus.active.tts = payload.speech.provider;
+    applyProviders(providerStatus);
+  }
   if (voiceMuted || !text.trim()) return;
+  if (payload.speech?.provider && payload.speech.provider !== "browser_speech_synthesis") {
+    voiceBadge.textContent = payload.speech.status === "audio_file" ? "Local TTS ready" : "Local TTS checked";
+    return;
+  }
+  await playBrowserSpeech(text);
+}
+
+async function playBrowserSpeech(text) {
   if (!window.speechSynthesis) {
     voiceBadge.textContent = "Speech output unavailable";
     return;
   }
   stopBrowserSpeech();
   const utterance = new SpeechSynthesisUtterance(text);
-  utterance.rate = 0.92;
-  utterance.pitch = 0.72;
-  utterance.volume = 0.95;
+  utterance.rate = providerStatus?.speech_settings?.rate || 0.92;
+  utterance.pitch = providerStatus?.speech_settings?.pitch || 0.72;
+  utterance.volume = providerStatus?.speech_settings?.volume || 0.95;
   const voices = window.speechSynthesis.getVoices();
   const preferred = voices.find((voice) => /david|mark|guy|english|zira/i.test(voice.name)) || voices.find((voice) => voice.lang?.startsWith("en"));
   if (preferred) utterance.voice = preferred;
@@ -402,7 +459,36 @@ function applyVoiceStatus(status) {
   pushToTalkToggle.textContent = pushToTalk ? "Push-to-talk" : "Continuous";
   pushToTalkToggle.setAttribute("aria-pressed", String(pushToTalk));
   confirmVoiceButton.hidden = !status.pending_confirmation_goal;
-  voiceBadge.textContent = status.listening ? "Listening" : status.speaking ? "Speaking" : "Voice standby";
+  voiceBadge.textContent = status.listening
+    ? "Listening"
+    : status.speaking
+      ? `Speaking via ${status.tts_provider || "voice"}`
+      : "Voice standby";
+  if (!providerStatus) {
+    sttProviderLabel.textContent = status.stt_provider || "text_payload";
+    ttsProviderLabel.textContent = status.tts_provider || "browser_speech_synthesis";
+  }
+}
+
+function applyProviders(payload) {
+  if (!payload) return;
+  const activeStt = payload.active?.stt || payload.voice?.stt_provider || "text_payload";
+  const activeTts = payload.active?.tts || payload.voice?.tts_provider || "browser_speech_synthesis";
+  const configuredStt = payload.configured?.stt || activeStt;
+  const configuredTts = payload.configured?.tts || activeTts;
+  const sttHealth = payload.providers?.stt;
+  const ttsHealth = payload.providers?.tts;
+  sttProviderLabel.textContent = activeStt;
+  ttsProviderLabel.textContent = activeTts;
+  sttProviderDetail.textContent = providerDetail(configuredStt, activeStt, sttHealth);
+  ttsProviderDetail.textContent = providerDetail(configuredTts, activeTts, ttsHealth);
+}
+
+function providerDetail(configured, active, health) {
+  const fallback = configured !== active ? `Fallback from ${configured}` : "Active";
+  if (!health) return fallback;
+  const state = health.available ? fallback : `Unavailable: ${health.detail}`;
+  return health.fallback_to ? `${state}; using ${health.fallback_to}` : state;
 }
 
 function renderHistory(items) {

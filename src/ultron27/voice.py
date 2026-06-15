@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import importlib.util
 import re
+import shutil
+import subprocess
+import tempfile
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 
@@ -27,6 +32,49 @@ class TTSProvider(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class VoiceProviderConfig:
+    stt_provider: str = "text_payload"
+    tts_provider: str = "browser_speech_synthesis"
+    stt_model_path: Path | None = None
+    tts_model_path: Path | None = None
+    tts_voice_path: Path | None = None
+    device: str = "cpu"
+    voice_identity: str = "ULTRON"
+    rate: float = 0.92
+    pitch: float = 0.72
+    volume: float = 0.95
+
+    @classmethod
+    def from_config(cls, config: Any) -> "VoiceProviderConfig":
+        return cls(
+            stt_provider=str(getattr(config, "voice_stt_provider", cls.stt_provider)).lower(),
+            tts_provider=str(getattr(config, "voice_tts_provider", cls.tts_provider)).lower(),
+            stt_model_path=getattr(config, "voice_stt_model_path", None),
+            tts_model_path=getattr(config, "voice_tts_model_path", None),
+            tts_voice_path=getattr(config, "voice_tts_voice_path", None),
+            device=str(getattr(config, "voice_device", cls.device)).lower(),
+            voice_identity=str(getattr(config, "voice_identity", cls.voice_identity)),
+            rate=float(getattr(config, "voice_rate", cls.rate)),
+            pitch=float(getattr(config, "voice_pitch", cls.pitch)),
+            volume=float(getattr(config, "voice_volume", cls.volume)),
+        )
+
+
+@dataclass
+class ProviderHealth:
+    kind: str
+    name: str
+    configured: bool
+    active: bool
+    available: bool
+    detail: str
+    fallback_to: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 @dataclass
 class STTResult:
     text: str
@@ -47,6 +95,12 @@ class VoiceStatus:
     push_to_talk: bool = True
     stt_provider: str = "text_payload"
     tts_provider: str = "browser_speech_synthesis"
+    configured_stt_provider: str = "text_payload"
+    configured_tts_provider: str = "browser_speech_synthesis"
+    voice_identity: str = "ULTRON"
+    voice_rate: float = 0.92
+    voice_pitch: float = 0.72
+    voice_volume: float = 0.95
     pending_confirmation_goal: str | None = None
     last_error: str | None = None
 
@@ -77,6 +131,109 @@ class TextPayloadSTT:
         normalized = strip_wake_word(text)
         return STTResult(text=normalized, confidence=1.0 if normalized else 0.0, provider=self.name, empty=not bool(normalized))
 
+    def health(self) -> ProviderHealth:
+        return ProviderHealth("stt", self.name, configured=True, active=True, available=True, detail="Accepts transcript/text payloads.")
+
+
+class BrowserTranscriptSTT(TextPayloadSTT):
+    name = "browser"
+
+    def health(self) -> ProviderHealth:
+        return ProviderHealth("stt", self.name, configured=True, active=True, available=True, detail="Uses browser speech recognition transcript payloads.")
+
+
+class MockSTT(TextPayloadSTT):
+    name = "mock_stt"
+
+    def __init__(self, transcript: str = "create note mock voice") -> None:
+        self.transcript = transcript
+
+    def transcribe(self, payload: dict[str, Any]) -> STTResult:
+        if payload.get("transcript") or payload.get("text"):
+            return super().transcribe(payload)
+        normalized = strip_wake_word(self.transcript)
+        return STTResult(text=normalized, confidence=1.0, provider=self.name, empty=not bool(normalized))
+
+    def health(self) -> ProviderHealth:
+        return ProviderHealth("stt", self.name, configured=True, active=True, available=True, detail="Deterministic mock STT provider for tests and demos.")
+
+
+class FasterWhisperSTT(TextPayloadSTT):
+    name = "faster_whisper"
+
+    def __init__(self, model_path: Path | None, *, device: str = "cpu") -> None:
+        self.model_path = model_path
+        self.device = device
+
+    def transcribe(self, payload: dict[str, Any]) -> STTResult:
+        if payload.get("transcript") or payload.get("text"):
+            result = super().transcribe(payload)
+            result.provider = self.name
+            return result
+        audio_path = _payload_audio_path(payload)
+        health = self.health()
+        if not audio_path or not health.available:
+            return STTResult(text="", confidence=0.0, provider=self.name, empty=True)
+        try:
+            from faster_whisper import WhisperModel  # type: ignore[import-not-found]
+
+            model = WhisperModel(str(self.model_path), device=self.device)
+            segments, info = model.transcribe(str(audio_path))
+            text = " ".join(segment.text.strip() for segment in segments).strip()
+            confidence = float(getattr(info, "language_probability", 1.0))
+            return STTResult(text=strip_wake_word(text), confidence=confidence, provider=self.name, empty=not bool(text))
+        except Exception:
+            return STTResult(text="", confidence=0.0, provider=self.name, empty=True)
+
+    def health(self) -> ProviderHealth:
+        if importlib.util.find_spec("faster_whisper") is None:
+            return ProviderHealth("stt", self.name, configured=True, active=False, available=False, detail="Python package faster-whisper is not installed.", fallback_to="browser")
+        if self.model_path is None:
+            return ProviderHealth("stt", self.name, configured=True, active=False, available=False, detail="No faster-whisper model path is configured.", fallback_to="browser")
+        if not self.model_path.exists():
+            return ProviderHealth("stt", self.name, configured=True, active=False, available=False, detail=f"Model path not found: {self.model_path}", fallback_to="browser")
+        return ProviderHealth("stt", self.name, configured=True, active=True, available=True, detail=f"Ready on {self.device}.")
+
+
+class WhisperCppSTT(TextPayloadSTT):
+    name = "whisper_cpp"
+
+    def __init__(self, model_path: Path | None, *, device: str = "cpu") -> None:
+        self.model_path = model_path
+        self.device = device
+        self.executable = shutil.which("whisper-cli") or shutil.which("main") or shutil.which("whisper.cpp")
+
+    def transcribe(self, payload: dict[str, Any]) -> STTResult:
+        if payload.get("transcript") or payload.get("text"):
+            result = super().transcribe(payload)
+            result.provider = self.name
+            return result
+        audio_path = _payload_audio_path(payload)
+        health = self.health()
+        if not audio_path or not health.available or not self.executable:
+            return STTResult(text="", confidence=0.0, provider=self.name, empty=True)
+        try:
+            process = subprocess.run(
+                [self.executable, "-m", str(self.model_path), "-f", str(audio_path), "-nt"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=45,
+            )
+        except Exception:
+            return STTResult(text="", confidence=0.0, provider=self.name, empty=True)
+        output = process.stdout.strip()
+        return STTResult(text=strip_wake_word(output), confidence=1.0 if output else 0.0, provider=self.name, empty=not bool(output))
+
+    def health(self) -> ProviderHealth:
+        if not self.executable:
+            return ProviderHealth("stt", self.name, configured=True, active=False, available=False, detail="whisper.cpp executable was not found on PATH.", fallback_to="browser")
+        if self.model_path is None:
+            return ProviderHealth("stt", self.name, configured=True, active=False, available=False, detail="No whisper.cpp model path is configured.", fallback_to="browser")
+        if not self.model_path.exists():
+            return ProviderHealth("stt", self.name, configured=True, active=False, available=False, detail=f"Model path not found: {self.model_path}", fallback_to="browser")
+        return ProviderHealth("stt", self.name, configured=True, active=True, available=True, detail=f"Ready on {self.device}.")
+
 
 class BrowserSpeechTTS:
     name = "browser_speech_synthesis"
@@ -95,6 +252,89 @@ class BrowserSpeechTTS:
     def stop(self) -> dict[str, Any]:
         return {"status": "stopped", "provider": self.name}
 
+    def health(self) -> ProviderHealth:
+        return ProviderHealth("tts", self.name, configured=True, active=True, available=True, detail="Browser SpeechSynthesis handles playback.")
+
+
+class PiperTTS:
+    name = "piper"
+
+    def __init__(self, model_path: Path | None, *, voice_path: Path | None = None, rate: float = 0.92, pitch: float = 0.72, volume: float = 0.95) -> None:
+        self.model_path = model_path
+        self.voice_path = voice_path
+        self.rate = rate
+        self.pitch = pitch
+        self.volume = volume
+        self.executable = shutil.which("piper")
+
+    def speak(self, text: str, *, voice: str = "ULTRON") -> dict[str, Any]:
+        if not text.strip():
+            return {"status": "empty", "provider": self.name, "voice": voice}
+        health = self.health()
+        if not health.available or not self.executable or not self.model_path:
+            return {"status": "unavailable", "provider": self.name, "voice": voice, "message": health.detail, "text": text}
+        output = tempfile.NamedTemporaryFile(prefix="ultron-piper-", suffix=".wav", delete=False)
+        output.close()
+        command = [self.executable, "--model", str(self.model_path), "--output_file", output.name]
+        if self.voice_path:
+            command.extend(["--config", str(self.voice_path)])
+        try:
+            process = subprocess.run(command, input=text, check=False, capture_output=True, text=True, timeout=30)
+        except Exception as exc:
+            return {"status": "error", "provider": self.name, "voice": voice, "message": str(exc), "text": text}
+        if process.returncode != 0:
+            return {"status": "error", "provider": self.name, "voice": voice, "message": process.stderr.strip(), "text": text}
+        return {"status": "audio_file", "provider": self.name, "voice": voice, "audio_path": output.name, "text": text}
+
+    def stop(self) -> dict[str, Any]:
+        return {"status": "stopped", "provider": self.name}
+
+    def health(self) -> ProviderHealth:
+        if not self.executable:
+            return ProviderHealth("tts", self.name, configured=True, active=False, available=False, detail="Piper executable was not found on PATH.", fallback_to="browser_speech_synthesis")
+        if self.model_path is None:
+            return ProviderHealth("tts", self.name, configured=True, active=False, available=False, detail="No Piper model path is configured.", fallback_to="browser_speech_synthesis")
+        if not self.model_path.exists():
+            return ProviderHealth("tts", self.name, configured=True, active=False, available=False, detail=f"Model path not found: {self.model_path}", fallback_to="browser_speech_synthesis")
+        if self.voice_path is not None and not self.voice_path.exists():
+            return ProviderHealth("tts", self.name, configured=True, active=False, available=False, detail=f"Piper voice config not found: {self.voice_path}", fallback_to="browser_speech_synthesis")
+        return ProviderHealth("tts", self.name, configured=True, active=True, available=True, detail="Piper is ready for local synthesis.")
+
+
+class Pyttsx3TTS:
+    name = "pyttsx3"
+
+    def __init__(self, *, rate: float = 0.92, pitch: float = 0.72, volume: float = 0.95) -> None:
+        self.rate = rate
+        self.pitch = pitch
+        self.volume = volume
+
+    def speak(self, text: str, *, voice: str = "ULTRON") -> dict[str, Any]:
+        if not text.strip():
+            return {"status": "empty", "provider": self.name, "voice": voice}
+        health = self.health()
+        if not health.available:
+            return {"status": "unavailable", "provider": self.name, "voice": voice, "message": health.detail, "text": text}
+        try:
+            import pyttsx3  # type: ignore[import-not-found]
+
+            engine = pyttsx3.init()
+            engine.setProperty("rate", max(80, min(260, int(185 * self.rate))))
+            engine.setProperty("volume", max(0.0, min(1.0, self.volume)))
+            engine.say(text)
+            engine.runAndWait()
+        except Exception as exc:
+            return {"status": "error", "provider": self.name, "voice": voice, "message": str(exc), "text": text}
+        return {"status": "spoken", "provider": self.name, "voice": voice, "text": text, "pitch": self.pitch}
+
+    def stop(self) -> dict[str, Any]:
+        return {"status": "stopped", "provider": self.name}
+
+    def health(self) -> ProviderHealth:
+        if importlib.util.find_spec("pyttsx3") is None:
+            return ProviderHealth("tts", self.name, configured=True, active=False, available=False, detail="Python package pyttsx3 is not installed.", fallback_to="browser_speech_synthesis")
+        return ProviderHealth("tts", self.name, configured=True, active=True, available=True, detail="pyttsx3 is importable for local speech synthesis.")
+
 
 class MockTTS:
     name = "mock_tts"
@@ -111,12 +351,36 @@ class MockTTS:
         self.stopped = True
         return {"status": "stopped", "provider": self.name}
 
+    def health(self) -> ProviderHealth:
+        return ProviderHealth("tts", self.name, configured=True, active=True, available=True, detail="Deterministic mock TTS provider for tests.")
+
 
 class VoiceSession:
-    def __init__(self, stt: STTProvider | None = None, tts: TTSProvider | None = None, *, history_limit: int = 20):
+    def __init__(
+        self,
+        stt: STTProvider | None = None,
+        tts: TTSProvider | None = None,
+        *,
+        configured_stt: STTProvider | None = None,
+        configured_tts: TTSProvider | None = None,
+        provider_config: VoiceProviderConfig | None = None,
+        history_limit: int = 20,
+    ):
+        self.provider_config = provider_config or VoiceProviderConfig()
         self.stt = stt or TextPayloadSTT()
         self.tts = tts or BrowserSpeechTTS()
-        self.status = VoiceStatus(stt_provider=self.stt.name, tts_provider=self.tts.name)
+        self.configured_stt = configured_stt or self.stt
+        self.configured_tts = configured_tts or self.tts
+        self.status = VoiceStatus(
+            stt_provider=self.stt.name,
+            tts_provider=self.tts.name,
+            configured_stt_provider=self.configured_stt.name,
+            configured_tts_provider=self.configured_tts.name,
+            voice_identity=self.provider_config.voice_identity,
+            voice_rate=self.provider_config.rate,
+            voice_pitch=self.provider_config.pitch,
+            voice_volume=self.provider_config.volume,
+        )
         self.history: list[TranscriptRecord] = []
         self.history_limit = history_limit
 
@@ -191,14 +455,53 @@ class VoiceSession:
         if self.status.muted:
             self.status.speaking = False
             return self.snapshot({"status": "muted", "message": "Voice output is muted.", "text": text})
-        payload = self.tts.speak(text, voice="ULTRON")
-        self.status.speaking = payload.get("status") not in {"empty", "error"}
+        payload = self.tts.speak(text, voice=self.provider_config.voice_identity)
+        self.status.speaking = payload.get("status") not in {"empty", "error", "unavailable"}
         return self.snapshot({"status": "ok", "speech": payload})
 
     def stop_speaking(self) -> dict[str, Any]:
         payload = self.tts.stop()
         self.status.speaking = False
         return self.snapshot({"status": "ok", "speech": payload})
+
+    def providers_status(self) -> dict[str, Any]:
+        stt_configured = _health(self.configured_stt, kind="stt", configured=True, active=self.configured_stt.name == self.stt.name)
+        tts_configured = _health(self.configured_tts, kind="tts", configured=True, active=self.configured_tts.name == self.tts.name)
+        stt_active = _health(self.stt, kind="stt", configured=self.configured_stt.name == self.stt.name, active=True)
+        tts_active = _health(self.tts, kind="tts", configured=self.configured_tts.name == self.tts.name, active=True)
+        if self.configured_stt.name != self.stt.name:
+            stt_configured.fallback_to = self.stt.name
+        if self.configured_tts.name != self.tts.name:
+            tts_configured.fallback_to = self.tts.name
+        return {
+            "configured": {"stt": self.configured_stt.name, "tts": self.configured_tts.name},
+            "active": {"stt": self.stt.name, "tts": self.tts.name},
+            "providers": {
+                "stt": stt_configured.to_dict(),
+                "tts": tts_configured.to_dict(),
+                "active_stt": stt_active.to_dict(),
+                "active_tts": tts_active.to_dict(),
+            },
+            "voice_identity": self.provider_config.voice_identity,
+            "speech_settings": {
+                "rate": self.provider_config.rate,
+                "pitch": self.provider_config.pitch,
+                "volume": self.provider_config.volume,
+                "device": self.provider_config.device,
+            },
+        }
+
+    def test_stt(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        test_payload = {"transcript": "ULTRON, create note provider test"} if payload is None else payload
+        result = self.stt.transcribe(test_payload)
+        return self.snapshot({"status": "ok" if not result.empty else "empty", "transcript": result.to_dict(), **self.providers_status()})
+
+    def test_tts(self, text: str = "ULTRON voice provider test.") -> dict[str, Any]:
+        if self.status.muted:
+            return self.snapshot({"status": "muted", "message": "Voice output is muted.", **self.providers_status()})
+        speech = self.tts.speak(text, voice=self.provider_config.voice_identity)
+        provider_status = self.providers_status()
+        return self.snapshot({"status": "ok", **provider_status, "speech": speech})
 
     def snapshot(self, extra: dict[str, Any] | None = None) -> dict[str, Any]:
         payload = {
@@ -213,6 +516,21 @@ class VoiceSession:
         self.history.append(record)
         if len(self.history) > self.history_limit:
             self.history = self.history[-self.history_limit :]
+
+
+def build_voice_session(config: Any | None = None) -> VoiceSession:
+    provider_config = VoiceProviderConfig.from_config(config) if config is not None else VoiceProviderConfig()
+    requested_stt = _create_stt_provider(provider_config)
+    requested_tts = _create_tts_provider(provider_config)
+    stt = requested_stt if _health(requested_stt, kind="stt", configured=True, active=False).available else BrowserTranscriptSTT()
+    tts = requested_tts if _health(requested_tts, kind="tts", configured=True, active=False).available else BrowserSpeechTTS()
+    return VoiceSession(
+        stt=stt,
+        tts=tts,
+        configured_stt=requested_stt,
+        configured_tts=requested_tts,
+        provider_config=provider_config,
+    )
 
 
 def strip_wake_word(text: str) -> str:
@@ -258,3 +576,50 @@ def first_result(task: dict[str, Any] | None) -> str | None:
     if status and message:
         return f"{status}: {message}"
     return str(status or message or "")
+
+
+def _create_stt_provider(config: VoiceProviderConfig) -> STTProvider:
+    provider = config.stt_provider
+    if provider == "faster_whisper":
+        return FasterWhisperSTT(config.stt_model_path, device=config.device)
+    if provider == "whisper_cpp":
+        return WhisperCppSTT(config.stt_model_path, device=config.device)
+    if provider == "browser":
+        return BrowserTranscriptSTT()
+    if provider == "mock":
+        return MockSTT()
+    return TextPayloadSTT()
+
+
+def _create_tts_provider(config: VoiceProviderConfig) -> TTSProvider:
+    provider = "browser_speech_synthesis" if config.tts_provider == "browser" else config.tts_provider
+    if provider == "piper":
+        return PiperTTS(
+            config.tts_model_path,
+            voice_path=config.tts_voice_path,
+            rate=config.rate,
+            pitch=config.pitch,
+            volume=config.volume,
+        )
+    if provider == "pyttsx3":
+        return Pyttsx3TTS(rate=config.rate, pitch=config.pitch, volume=config.volume)
+    if provider == "mock":
+        return MockTTS()
+    return BrowserSpeechTTS()
+
+
+def _health(provider: Any, *, kind: str, configured: bool, active: bool) -> ProviderHealth:
+    if hasattr(provider, "health"):
+        health = provider.health()
+        health.configured = configured
+        health.active = active
+        return health
+    return ProviderHealth(kind, getattr(provider, "name", "unknown"), configured=configured, active=active, available=True, detail="Provider does not expose a detailed health check.")
+
+
+def _payload_audio_path(payload: dict[str, Any]) -> Path | None:
+    raw = payload.get("audio_path")
+    if not raw:
+        return None
+    path = Path(str(raw)).expanduser()
+    return path if path.exists() and path.is_file() else None
