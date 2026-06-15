@@ -13,11 +13,14 @@
       <header class="topbar">
         <div>
           <p class="eyebrow">ULTRON 2.7</p>
-          <h1>Neural Interface</h1>
+          <h1>Neural Voice Interface</h1>
         </div>
-        <div class="status-strip">
-          <span id="statusDot" class="status-dot"></span>
-          <span id="statusLabel">Idle</span>
+        <div class="status-stack">
+          <div class="status-strip">
+            <span id="statusDot" class="status-dot"></span>
+            <span id="statusLabel">Idle</span>
+          </div>
+          <div id="voiceBadge" class="voice-badge">Voice standby</div>
         </div>
       </header>
 
@@ -33,9 +36,23 @@
         <p id="subtitleText">ULTRON 2.7 online.</p>
       </section>
 
+      <section class="voice-console" aria-label="Voice controls">
+        <button id="micToggle" type="button">Mic On</button>
+        <button id="pushToTalkToggle" type="button" aria-pressed="true">Push-to-talk</button>
+        <button id="muteToggle" type="button" aria-pressed="false">Mute Off</button>
+        <button id="stopSpeakingButton" type="button">Stop Voice</button>
+        <button id="confirmVoiceButton" class="confirm-action" type="button" hidden>Confirm</button>
+        <button id="mockVoiceButton" type="button">Mock Voice</button>
+      </section>
+
       <section class="command-row" aria-label="Command input">
         <input id="commandInput" type="text" autocomplete="off" placeholder="Type a command for ULTRON..." />
         <button id="sendButton" type="button">Send</button>
+      </section>
+
+      <section class="voice-history" aria-label="Voice transcript history">
+        <div class="history-header">Transcript history</div>
+        <ol id="voiceHistory"></ol>
       </section>
 
       <nav class="state-controls" aria-label="Visual state controls">

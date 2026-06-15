@@ -45,6 +45,15 @@ web UI -> local API -> brain -> TaskPlan -> safe runtime step(s)
 
 The browser interface can change visual state, send typed commands, show subtitles, and inspect memory through typed API endpoints. It is not an execution authority. Command execution still flows through the brain and the existing safe runtime.
 
+Phase 8 adds voice adapters around the visual interface:
+
+```text
+voice -> STT adapter -> local API -> brain -> TaskPlan -> safe runtime step(s)
+-> text response -> TTS adapter
+```
+
+Voice mode is still an input/output layer. It does not change the planner, validator, policy, executor, or audit responsibilities.
+
 ## Core Principles
 
 - Local-first by default.
@@ -58,6 +67,7 @@ The browser interface can change visual state, send typed commands, show subtitl
 - LLM output is treated as untrusted input until it passes schema validation and policy.
 - The brain is orchestration only; it does not receive raw shell access.
 - Persistent memory rejects obvious sensitive content such as passwords, API keys, tokens, credentials, and secrets.
+- Voice mode requires explicit confirmation phrases for high-risk actions.
 
 ## Risk Levels
 
@@ -118,6 +128,30 @@ The frontend lives under `web/` and uses Three.js for the animated green plasma 
 | speaking | expanded glow and crawling plasma arcs | ULTRON is presenting the result |
 
 The UI never receives raw shell access and does not run tools directly. `/api/command` sends the user goal to `UltronBrain`, which routes each step through the planner, validator, policy gate, executor, and audit log.
+
+## Phase 8 Voice Boundary
+
+Voice support lives in `src/ultron27/voice.py` and the web API routes in `src/ultron27/web_server.py`. The voice layer owns:
+
+- microphone/session state,
+- transcript history,
+- provider abstraction for STT and TTS,
+- mute and stop-speaking state,
+- explicit confirmation phrase handling.
+
+The browser can use its built-in speech recognition as a capture adapter. The backend accepts a transcript through `POST /api/voice/transcribe`, strips the wake word, and sends the resulting goal through `UltronBrain`.
+
+Voice API endpoints:
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/voice/start` | Mark voice mode active and listening. |
+| `POST /api/voice/stop` | Stop listening. |
+| `POST /api/voice/transcribe` | Accept a transcript/audio-provider payload and process it safely. |
+| `POST /api/speak` | Track or stop speech output. |
+| `GET /api/voice/status` | Return voice state and transcript history. |
+
+High-risk voice commands pause with `waiting_for_confirmation`. The confirmation phrase must be explicit, for example `yes confirm`. Confirmed destructive actions still remain dry-run or not implemented unless a safe executor is later designed.
 
 ## Dataset Role
 

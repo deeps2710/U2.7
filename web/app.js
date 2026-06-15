@@ -7,6 +7,14 @@ const subtitleToggle = document.getElementById("subtitleToggle");
 const commandInput = document.getElementById("commandInput");
 const sendButton = document.getElementById("sendButton");
 const statusLabel = document.getElementById("statusLabel");
+const voiceBadge = document.getElementById("voiceBadge");
+const micToggle = document.getElementById("micToggle");
+const pushToTalkToggle = document.getElementById("pushToTalkToggle");
+const muteToggle = document.getElementById("muteToggle");
+const stopSpeakingButton = document.getElementById("stopSpeakingButton");
+const confirmVoiceButton = document.getElementById("confirmVoiceButton");
+const mockVoiceButton = document.getElementById("mockVoiceButton");
+const voiceHistory = document.getElementById("voiceHistory");
 const stateButtons = [...document.querySelectorAll("[data-state]")];
 
 const scene = new THREE.Scene();
@@ -28,7 +36,14 @@ const stateTargets = {
 
 let visualState = "idle";
 let subtitlesEnabled = true;
+let micEnabled = false;
+let pushToTalk = true;
+let voiceMuted = false;
 let returnTimer = null;
+let recognition = null;
+let recognitionActive = false;
+
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
 const root = new THREE.Group();
 root.position.y = 0.32;
@@ -122,6 +137,7 @@ scene.add(fill);
 
 setVisualState("idle", { sync: false });
 loadStatus();
+setupSpeechRecognition();
 animate();
 
 stateButtons.forEach((button) => {
@@ -141,6 +157,39 @@ subtitleToggle.addEventListener("click", async () => {
     // The local visual toggle should keep working even if the API is not ready.
   }
 });
+
+micToggle.addEventListener("click", () => {
+  if (micEnabled) {
+    stopVoiceInput();
+  } else {
+    startVoiceInput();
+  }
+});
+
+pushToTalkToggle.addEventListener("click", () => {
+  pushToTalk = !pushToTalk;
+  pushToTalkToggle.textContent = pushToTalk ? "Push-to-talk" : "Continuous";
+  pushToTalkToggle.setAttribute("aria-pressed", String(pushToTalk));
+});
+
+muteToggle.addEventListener("click", async () => {
+  voiceMuted = !voiceMuted;
+  muteToggle.textContent = voiceMuted ? "Muted" : "Mute Off";
+  muteToggle.setAttribute("aria-pressed", String(voiceMuted));
+  await postJson("/api/speak", { muted: voiceMuted, text: "" });
+  if (voiceMuted) stopBrowserSpeech();
+});
+
+stopSpeakingButton.addEventListener("click", async () => {
+  stopBrowserSpeech();
+  await postJson("/api/speak", { action: "stop" });
+  setVisualState(micEnabled ? "listening" : "idle");
+});
+
+confirmVoiceButton.addEventListener("click", () => handleVoiceTranscript("yes confirm"));
+mockVoiceButton.addEventListener("click", () =>
+  handleVoiceTranscript("ULTRON, create a note called demo and write that voice mode is working.")
+);
 
 sendButton.addEventListener("click", sendCommand);
 commandInput.addEventListener("keydown", (event) => {
@@ -162,17 +211,12 @@ async function sendCommand() {
   setSubtitle(`Processing: ${command}`);
   setVisualState("thinking");
   try {
-    const response = await fetch("/api/command", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ command, mode: "do" }),
-    });
-    const payload = await response.json();
+    const payload = await postJson("/api/command", { command, mode: "do" });
     const spoken = payload.subtitle || buildTaskSubtitle(payload.task) || payload.message || "Command processed.";
     setSubtitle(spoken);
     setVisualState("speaking");
-    window.clearTimeout(returnTimer);
-    returnTimer = window.setTimeout(() => setVisualState("listening"), 3200);
+    await speakText(spoken);
+    scheduleListeningReturn();
   } catch {
     setSubtitle("Local interface could not reach the ULTRON runtime.");
     setVisualState("idle");
@@ -181,15 +225,145 @@ async function sendCommand() {
 
 async function loadStatus() {
   try {
-    const response = await fetch("/api/status");
-    const payload = await response.json();
+    const payload = await fetchJson("/api/status");
     subtitlesEnabled = Boolean(payload.subtitles_enabled);
     setSubtitle(payload.last_subtitle || "ULTRON 2.7 online.");
     setVisualState(payload.visual_state || "idle", { sync: false });
     updateSubtitles();
+    const voicePayload = await fetchJson("/api/voice/status");
+    applyVoiceStatus(voicePayload.voice);
+    renderHistory(voicePayload.history || []);
   } catch {
     setSubtitle("ULTRON visual shell loaded. Runtime API pending.");
   }
+}
+
+async function startVoiceInput() {
+  micEnabled = true;
+  micToggle.textContent = "Mic Off";
+  voiceBadge.textContent = SpeechRecognition ? "Listening" : "Speech API unavailable";
+  setVisualState("listening");
+  await postJson("/api/voice/start", { push_to_talk: pushToTalk });
+  if (!SpeechRecognition) {
+    setSubtitle("Speech recognition is unavailable in this browser. Use typed input or Mock Voice.");
+    return;
+  }
+  startRecognition();
+}
+
+async function stopVoiceInput() {
+  micEnabled = false;
+  micToggle.textContent = "Mic On";
+  voiceBadge.textContent = "Voice standby";
+  setVisualState("idle");
+  if (recognition && recognitionActive) {
+    recognition.stop();
+  }
+  await postJson("/api/voice/stop", {});
+}
+
+function setupSpeechRecognition() {
+  if (!SpeechRecognition) return;
+  recognition = new SpeechRecognition();
+  recognition.lang = "en-US";
+  recognition.interimResults = false;
+  recognition.maxAlternatives = 1;
+  recognition.onstart = () => {
+    recognitionActive = true;
+    voiceBadge.textContent = "Listening";
+    setVisualState("listening");
+  };
+  recognition.onspeechstart = () => {
+    voiceBadge.textContent = "Speech detected";
+    setVisualState("listening");
+  };
+  recognition.onresult = (event) => {
+    const transcript = event.results?.[0]?.[0]?.transcript || "";
+    if (transcript.trim()) handleVoiceTranscript(transcript);
+  };
+  recognition.onerror = (event) => {
+    voiceBadge.textContent = `Voice error: ${event.error}`;
+    setSubtitle("Voice capture had trouble. Typed mode is still available.");
+    setVisualState("idle");
+  };
+  recognition.onend = () => {
+    recognitionActive = false;
+    if (micEnabled && !pushToTalk) {
+      window.setTimeout(startRecognition, 350);
+    }
+  };
+}
+
+function startRecognition() {
+  if (!recognition || recognitionActive) return;
+  recognition.continuous = !pushToTalk;
+  try {
+    recognition.start();
+  } catch {
+    voiceBadge.textContent = "Voice restart pending";
+  }
+}
+
+async function handleVoiceTranscript(transcript) {
+  if (!transcript.trim()) return;
+  setSubtitle(`You: ${transcript}`);
+  setVisualState("thinking");
+  voiceBadge.textContent = "Processing voice";
+  try {
+    const payload = await postJson("/api/voice/transcribe", { transcript });
+    applyVoiceStatus(payload.voice);
+    renderHistory(payload.history || []);
+    const response = payload.spoken_response || payload.subtitle || payload.message || "Voice command processed.";
+    setSubtitle(payload.subtitle || `You: ${transcript}\nULTRON: ${response}`);
+    confirmVoiceButton.hidden = !payload.needs_confirmation;
+    if (payload.status === "empty") {
+      setVisualState("listening");
+      return;
+    }
+    setVisualState(payload.needs_confirmation ? "listening" : "speaking");
+    await speakText(response);
+    scheduleListeningReturn();
+  } catch {
+    setSubtitle("Voice mode could not reach the ULTRON runtime.");
+    setVisualState("idle");
+  }
+}
+
+async function speakText(text) {
+  await postJson("/api/speak", { text, muted: voiceMuted });
+  if (voiceMuted || !text.trim()) return;
+  if (!window.speechSynthesis) {
+    voiceBadge.textContent = "Speech output unavailable";
+    return;
+  }
+  stopBrowserSpeech();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.rate = 0.92;
+  utterance.pitch = 0.72;
+  utterance.volume = 0.95;
+  const voices = window.speechSynthesis.getVoices();
+  const preferred = voices.find((voice) => /david|mark|guy|english|zira/i.test(voice.name)) || voices.find((voice) => voice.lang?.startsWith("en"));
+  if (preferred) utterance.voice = preferred;
+  utterance.onstart = () => {
+    voiceBadge.textContent = "Speaking";
+    setVisualState("speaking");
+  };
+  utterance.onend = () => {
+    voiceBadge.textContent = micEnabled ? "Listening" : "Voice standby";
+    setVisualState(micEnabled ? "listening" : "idle");
+  };
+  window.speechSynthesis.speak(utterance);
+}
+
+function stopBrowserSpeech() {
+  if (window.speechSynthesis) {
+    window.speechSynthesis.cancel();
+  }
+}
+
+function scheduleListeningReturn() {
+  window.clearTimeout(returnTimer);
+  returnTimer = window.setTimeout(() => setVisualState(micEnabled ? "listening" : "idle"), 3200);
 }
 
 function setVisualState(state, options = {}) {
@@ -217,10 +391,59 @@ function updateSubtitles() {
   subtitleToggle.setAttribute("aria-pressed", String(subtitlesEnabled));
 }
 
+function applyVoiceStatus(status) {
+  if (!status) return;
+  micEnabled = Boolean(status.microphone_enabled);
+  voiceMuted = Boolean(status.muted);
+  pushToTalk = Boolean(status.push_to_talk);
+  micToggle.textContent = micEnabled ? "Mic Off" : "Mic On";
+  muteToggle.textContent = voiceMuted ? "Muted" : "Mute Off";
+  muteToggle.setAttribute("aria-pressed", String(voiceMuted));
+  pushToTalkToggle.textContent = pushToTalk ? "Push-to-talk" : "Continuous";
+  pushToTalkToggle.setAttribute("aria-pressed", String(pushToTalk));
+  confirmVoiceButton.hidden = !status.pending_confirmation_goal;
+  voiceBadge.textContent = status.listening ? "Listening" : status.speaking ? "Speaking" : "Voice standby";
+}
+
+function renderHistory(items) {
+  voiceHistory.innerHTML = "";
+  const recent = [...items].slice(-4).reverse();
+  if (!recent.length) {
+    const empty = document.createElement("li");
+    empty.textContent = "No voice commands yet.";
+    voiceHistory.append(empty);
+    return;
+  }
+  for (const item of recent) {
+    const li = document.createElement("li");
+    const tool = item.tool_selected ? `Tool: ${item.tool_selected}` : "No tool selected";
+    li.innerHTML = `<strong>You</strong>: ${escapeHtml(item.user_said)}<br><strong>ULTRON</strong>: ${escapeHtml(item.spoken_response)}<br><span>${escapeHtml(tool)}</span>`;
+    voiceHistory.append(li);
+  }
+}
+
 function buildTaskSubtitle(task) {
   if (!task) return "";
   if (task.summary) return task.summary;
   return `Task ${task.status || "updated"}.`;
+}
+
+async function fetchJson(url) {
+  const response = await fetch(url);
+  return response.json();
+}
+
+async function postJson(url, payload) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return response.json();
+}
+
+function escapeHtml(value) {
+  return String(value || "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[char]);
 }
 
 function animate() {
@@ -235,11 +458,11 @@ function animate() {
   sphere.rotation.y -= 0.002;
   sphereUniforms.time.value = elapsed;
   sphereUniforms.intensity.value += (target.glow - sphereUniforms.intensity.value) * 0.08;
-  glow.material.opacity += ((0.42 + target.glow * 0.22) - glow.material.opacity) * 0.08;
+  glow.material.opacity += (0.42 + target.glow * 0.22 - glow.material.opacity) * 0.08;
   glow.scale.setScalar(2.75 + target.glow * 0.38 + Math.sin(elapsed * 2.2) * 0.04);
 
   plasmaLines.children.forEach((line, i) => {
-    line.material.opacity += ((target.line * (0.36 + (i % 5) * 0.08)) - line.material.opacity) * 0.08;
+    line.material.opacity += (target.line * (0.36 + (i % 5) * 0.08) - line.material.opacity) * 0.08;
     line.rotation.z += (visualState === "speaking" ? 0.006 : 0.002) * (i % 2 ? 1 : -1);
   });
 
@@ -260,9 +483,9 @@ function animate() {
 function makeArc(seed) {
   const points = [];
   const radius = 1.055 + (seed % 4) * 0.006;
-  const basePhi = 0.38 + ((seed * 37) % 180) / 180 * Math.PI * 0.72;
-  const baseTheta = ((seed * 53) % 360) / 360 * Math.PI * 2;
-  const length = 0.7 + ((seed * 29) % 100) / 100 * 1.6;
+  const basePhi = 0.38 + (((seed * 37) % 180) / 180) * Math.PI * 0.72;
+  const baseTheta = (((seed * 53) % 360) / 360) * Math.PI * 2;
+  const length = 0.7 + (((seed * 29) % 100) / 100) * 1.6;
   for (let i = 0; i < 42; i += 1) {
     const t = i / 41;
     const wobble = Math.sin(t * Math.PI * 4 + seed) * 0.06;

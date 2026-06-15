@@ -50,8 +50,8 @@ body {
   z-index: 2;
   min-height: 100vh;
   display: grid;
-  grid-template-rows: auto minmax(260px, 1fr) auto auto auto;
-  padding: 28px clamp(20px, 5vw, 72px) 26px;
+  grid-template-rows: auto minmax(220px, 1fr) auto auto auto auto;
+  padding: 24px clamp(20px, 5vw, 72px) 22px;
 }
 
 .topbar {
@@ -77,9 +77,18 @@ h1 {
   text-shadow: 0 0 22px rgba(0, 255, 102, 0.38);
 }
 
+.status-stack {
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+}
+
 .status-strip,
+.voice-badge,
 .subtitles,
+.voice-console,
 .command-row,
+.voice-history,
 .state-controls {
   border: 1px solid var(--border);
   background: var(--panel);
@@ -87,8 +96,9 @@ h1 {
   backdrop-filter: blur(10px);
 }
 
-.status-strip {
-  min-width: 120px;
+.status-strip,
+.voice-badge {
+  min-width: 132px;
   height: 34px;
   padding: 0 12px;
   display: inline-flex;
@@ -97,6 +107,10 @@ h1 {
   gap: 8px;
   font-size: 13px;
   color: var(--muted);
+}
+
+.voice-badge {
+  min-width: 168px;
 }
 
 .status-dot {
@@ -108,21 +122,21 @@ h1 {
 }
 
 .stage {
-  min-height: 38vh;
+  min-height: 32vh;
   display: grid;
   place-items: center;
 }
 
 .sphere-space {
-  width: min(50vw, 520px);
-  max-width: 520px;
+  width: min(42vw, 440px);
+  max-width: 440px;
   aspect-ratio: 1;
 }
 
 .subtitles {
-  width: min(860px, 100%);
-  min-height: 96px;
-  margin: 0 auto 14px;
+  width: min(900px, 100%);
+  min-height: 92px;
+  margin: 0 auto 10px;
   padding: 14px 16px 16px;
 }
 
@@ -130,7 +144,8 @@ h1 {
   visibility: hidden;
 }
 
-.subtitle-header {
+.subtitle-header,
+.history-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -141,15 +156,27 @@ h1 {
 
 #subtitleText {
   margin: 0;
-  min-height: 34px;
+  min-height: 38px;
+  white-space: pre-line;
   color: var(--text);
-  font-size: clamp(15px, 1.8vw, 19px);
-  line-height: 1.45;
+  font-size: clamp(15px, 1.65vw, 18px);
+  line-height: 1.42;
+}
+
+.voice-console,
+.command-row,
+.voice-history,
+.state-controls {
+  width: min(900px, 100%);
+  margin: 0 auto 10px;
+}
+
+.voice-console {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
 }
 
 .command-row {
-  width: min(860px, 100%);
-  margin: 0 auto 12px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 100px;
 }
@@ -163,7 +190,7 @@ button {
   min-width: 0;
   border: 0;
   outline: 0;
-  padding: 14px 16px;
+  padding: 13px 16px;
   color: var(--text);
   background: transparent;
 }
@@ -191,18 +218,40 @@ button:active {
   transform: translateY(1px);
 }
 
-.state-controls {
-  width: min(860px, 100%);
-  margin: 0 auto;
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+button[aria-pressed="true"],
+.confirm-action {
+  color: #041208;
+  background: linear-gradient(90deg, var(--green), var(--lime));
+  box-shadow: 0 0 22px rgba(0, 255, 102, 0.35);
 }
 
-.state-controls button,
-#subtitleToggle,
-#sendButton {
-  border-top: 0;
-  border-bottom: 0;
+.voice-history {
+  max-height: 118px;
+  overflow: auto;
+  padding: 10px 14px;
+}
+
+.voice-history ol {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 8px;
+}
+
+.voice-history li {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.voice-history span {
+  color: var(--muted);
+}
+
+.state-controls {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 0;
 }
 
 .state-controls button.is-active {
@@ -223,7 +272,7 @@ body.state-speaking .status-dot {
   background: #00ff88;
 }
 
-@media (max-width: 720px) {
+@media (max-width: 860px) {
   body {
     overflow: auto;
   }
@@ -231,7 +280,7 @@ body.state-speaking .status-dot {
   .shell {
     min-height: 100svh;
     padding: 18px 14px;
-    grid-template-rows: auto minmax(240px, 43vh) auto auto auto;
+    grid-template-rows: auto minmax(220px, 38vh) auto auto auto auto;
   }
 
   .topbar {
@@ -239,7 +288,11 @@ body.state-speaking .status-dot {
   }
 
   .sphere-space {
-    width: min(72vw, 340px);
+    width: min(70vw, 320px);
+  }
+
+  .voice-console {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .command-row {

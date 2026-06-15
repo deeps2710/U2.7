@@ -20,6 +20,7 @@ The repo is built around the supplied research paper and synthetic laptop-comman
 - Interactive assistant console for repeated commands, confirmations, and JSON inspection.
 - Agentic brain layer for multi-step task planning, safe execution, and non-sensitive memory.
 - Cyberpunk green plasma-sphere web interface backed by the local brain/runtime API.
+- Voice mode with browser speech recognition, speech synthesis, transcript history, mute, push-to-talk, and confirmation controls.
 - Pytest test suite for planner, validation, policy, and execution behavior.
 
 ## Project Layout
@@ -50,6 +51,7 @@ python -m ultron27 --interactive
 python -m ultron27 "/plan Create a note called project ideas and add that I should test voice mode next." --text
 python -m ultron27 "/do Create a note called project ideas and add that I should test voice mode next." --text --execute --workspace .
 python scripts/run_phase7_ui.py --port 8765
+python scripts/run_phase8_voice_ui.py --port 8765
 python -m unittest discover -s tests
 ```
 
@@ -109,6 +111,7 @@ ultron "/do create a note called ideas and add that voice mode is next" --text -
 ultron "/memory" --text
 ultron "/forget last_note" --text
 ultron-ui --port 8765
+python scripts/run_phase8_voice_ui.py --port 8765
 ultron "create note standup" --workspace .
 ultron "open notepad" --execute
 ultron "delete project_report.txt" --yes
@@ -274,6 +277,44 @@ POST /api/subtitles/toggle
 POST /api/state
 ```
 
+## Phase 8 Voice Mode
+
+Phase 8 adds voice interaction on top of the Phase 7 interface. The browser captures speech when its speech-recognition API is available, sends the transcript to ULTRON's local API, and ULTRON answers through browser speech synthesis unless muted.
+
+Run it with:
+
+```powershell
+python scripts/run_phase8_voice_ui.py --port 8765
+```
+
+Voice controls:
+
+- Mic On/Off for browser speech capture.
+- Push-to-talk or continuous recognition.
+- Mute Off/Muted for ULTRON voice output.
+- Stop Voice to cancel speech synthesis.
+- Confirm for explicit high-risk action confirmation.
+- Mock Voice to test the full voice pipeline without a microphone.
+
+Voice API endpoints:
+
+```text
+POST /api/voice/start
+POST /api/voice/stop
+POST /api/voice/transcribe
+POST /api/speak
+GET  /api/voice/status
+```
+
+Voice still uses the same safe runtime:
+
+```text
+voice -> STT -> brain/runtime -> typed tool call -> validation -> policy
+-> executor -> audit -> response -> TTS
+```
+
+If microphone/STT is unavailable, typed mode and Mock Voice still work. If TTS is unavailable or muted, subtitles still show the response.
+
 ## Example
 
 ```powershell
@@ -311,12 +352,12 @@ utterance -> planner -> typed tool call -> schema validator -> policy gate
 -> executor -> audit log -> response
 ```
 
-High-risk operations such as deleting files, sending email, running scripts, restarting, or shutting down require confirmation. Destructive execution is intentionally left unimplemented in this MVP.
+High-risk operations such as deleting files, sending email, running scripts, restarting, or shutting down require confirmation. In voice mode, confirmation must be explicit, such as `yes confirm`. Destructive execution is intentionally left unimplemented in this MVP.
 
 ## Roadmap
 
-1. Add local STT using faster-whisper or whisper.cpp.
-2. Add local TTS using Piper.
-3. Add wake-word and VAD using openWakeWord and Silero VAD.
+1. Plug in local STT using faster-whisper or whisper.cpp.
+2. Plug in local TTS using Piper or pyttsx3.
+3. Add wake-word and stronger VAD using openWakeWord and Silero VAD.
 4. Grow the dataset with real corrected transcripts and Hinglish/Hindi variants.
 5. Add richer OS-specific executor plugins for Windows, macOS, and Linux.

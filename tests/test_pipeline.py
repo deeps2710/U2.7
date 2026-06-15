@@ -23,6 +23,7 @@ from ultron27.planner import DatasetPlanner, regex_plan
 from ultron27.policy import decide
 from ultron27.runtime import RuntimeSettings, UltronAssistant
 from ultron27.tools import validate_tool_call
+from ultron27.voice import MockTTS, VoiceSession, strip_wake_word
 from ultron27.web_server import WebState, make_handler
 
 
@@ -608,6 +609,136 @@ class PipelineTest(unittest.TestCase):
 
         self.assertEqual(status["status"], "ok")
         self.assertFalse(toggled["subtitles_enabled"])
+
+    def test_phase8_voice_transcript_executes_command(self) -> None:
+        state = WebState(UltronBrain(UltronAssistant(_test_settings())))
+
+        payload = state.voice_transcribe({"transcript": "ULTRON, create note voice demo"})
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["transcript"]["text"], "create note voice demo")
+        self.assertEqual(payload["visual_state"], "speaking")
+        self.assertEqual(payload["task"]["steps"][0]["tool_call"]["name"], "create_note")
+        self.assertEqual(payload["history"][0]["tool_selected"], "create_note")
+
+    def test_phase8_high_risk_voice_command_requires_confirmation(self) -> None:
+        state = WebState(UltronBrain(UltronAssistant(_test_settings())))
+
+        payload = state.voice_transcribe({"transcript": "ULTRON, delete project_report.txt"})
+
+        self.assertTrue(payload["needs_confirmation"])
+        self.assertEqual(payload["task"]["status"], "waiting_for_confirmation")
+        self.assertEqual(payload["voice"]["pending_confirmation_goal"], "delete project_report.txt")
+        self.assertIn("yes confirm", payload["spoken_response"])
+
+        confirmed = state.voice_transcribe({"transcript": "yes confirm"})
+
+        self.assertTrue(confirmed["confirmed"])
+        self.assertNotEqual(confirmed["task"]["status"], "waiting_for_confirmation")
+
+    def test_phase8_tts_response_generated(self) -> None:
+        tts = MockTTS()
+        state = WebState(UltronBrain(UltronAssistant(_test_settings())), voice=VoiceSession(tts=tts))
+
+        payload = state.speak({"text": "Done. I created the note demo."})
+
+        self.assertEqual(tts.spoken, ["Done. I created the note demo."])
+        self.assertEqual(payload["speech"]["status"], "spoken")
+        self.assertTrue(payload["voice"]["speaking"])
+
+    def test_phase8_mute_disables_speaking(self) -> None:
+        tts = MockTTS()
+        state = WebState(UltronBrain(UltronAssistant(_test_settings())), voice=VoiceSession(tts=tts))
+        state.voice.set_muted(True)
+
+        payload = state.speak({"text": "This should not be spoken."})
+
+        self.assertEqual(tts.spoken, [])
+        self.assertEqual(payload["status"], "muted")
+        self.assertFalse(payload["voice"]["speaking"])
+
+    def test_phase8_voice_subtitles_update_and_toggle_still_works(self) -> None:
+        state = WebState(UltronBrain(UltronAssistant(_test_settings())))
+
+        payload = state.voice_transcribe({"transcript": "create note subtitles"})
+        toggled = state.toggle_subtitles(False)
+
+        self.assertIn("You: create note subtitles", payload["last_subtitle"])
+        self.assertIn("ULTRON:", payload["last_subtitle"])
+        self.assertFalse(toggled["subtitles_enabled"])
+
+    def test_phase8_empty_voice_input_does_not_execute(self) -> None:
+        state = WebState(UltronBrain(UltronAssistant(_test_settings())))
+
+        payload = state.voice_transcribe({"transcript": "   "})
+
+        self.assertEqual(payload["status"], "empty")
+        self.assertEqual(payload["visual_state"], "listening")
+        self.assertEqual(payload["last_task"], None)
+        self.assertEqual(payload["history"], [])
+
+    def test_phase8_voice_api_endpoints(self) -> None:
+        state = WebState(UltronBrain(UltronAssistant(_test_settings())))
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(state))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            started = json.loads(
+                urlopen(
+                    Request(
+                        base + "/api/voice/start",
+                        data=json.dumps({"push_to_talk": True}).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    ),
+                    timeout=5,
+                )
+                .read()
+                .decode("utf-8")
+            )
+            transcribed = json.loads(
+                urlopen(
+                    Request(
+                        base + "/api/voice/transcribe",
+                        data=json.dumps({"transcript": "ULTRON, create note api voice"}).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    ),
+                    timeout=5,
+                )
+                .read()
+                .decode("utf-8")
+            )
+            status = json.loads(urlopen(base + "/api/voice/status", timeout=5).read().decode("utf-8"))
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        self.assertEqual(started["visual_state"], "listening")
+        self.assertEqual(transcribed["task"]["steps"][0]["tool_call"]["name"], "create_note")
+        self.assertEqual(status["status"], "ok")
+
+    def test_phase8_wake_word_is_removed_from_transcript(self) -> None:
+        self.assertEqual(strip_wake_word("ULTRON, create note demo"), "create note demo")
+        self.assertEqual(strip_wake_word("hey ultron: open notepad"), "open notepad")
+
+
+def _test_settings() -> RuntimeSettings:
+    return RuntimeSettings(
+        dataset_path=Path("data/jarvis_dataset_v2/jarvis_laptop_commands_synthetic_v2.jsonl"),
+        audit_log=Path(".ultron/test-audit.jsonl"),
+        workspace=Path("."),
+        dry_run=True,
+        safe_roots=(Path("."),),
+        app_aliases=None,
+        screenshot_dir=Path(".ultron/screenshots"),
+        planner_mode="rules",
+        llm_model="unused",
+        llm_endpoint="http://localhost:11434",
+        llm_timeout_seconds=1.0,
+        write_audit=False,
+    )
 
 
 if __name__ == "__main__":

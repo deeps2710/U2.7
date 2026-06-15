@@ -4,7 +4,7 @@ import argparse
 import json
 import mimetypes
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 from .brain import UltronBrain
 from .config import load_config
 from .runtime import RuntimeSettings, UltronAssistant
+from .voice import VoiceSession
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -22,6 +23,7 @@ WEB_ROOT = ROOT / "web"
 @dataclass
 class WebState:
     brain: UltronBrain
+    voice: VoiceSession = field(default_factory=VoiceSession)
     visual_state: str = "idle"
     subtitles_enabled: bool = True
     last_subtitle: str = "ULTRON 2.7 online."
@@ -49,6 +51,43 @@ class WebState:
         self.last_subtitle = task.summary or f"Task {task.status.value}."
         self.visual_state = "speaking"
         return self.snapshot({"status": "ok", "task": self.last_task, "subtitle": self.last_subtitle})
+
+    def voice_start(self, *, push_to_talk: bool | None = None) -> dict[str, Any]:
+        self.visual_state = "listening"
+        return self.snapshot(self.voice.start(push_to_talk=push_to_talk))
+
+    def voice_stop(self) -> dict[str, Any]:
+        payload = self.voice.stop()
+        self.visual_state = "idle"
+        return self.snapshot(payload)
+
+    def voice_transcribe(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.visual_state = "thinking"
+        voice_payload = self.voice.transcribe_and_run(payload, lambda goal, confirmed=False: self.command(goal, confirmed=confirmed))
+        if voice_payload.get("status") == "empty":
+            self.last_subtitle = str(voice_payload.get("message", "No speech was detected."))
+            self.visual_state = "listening"
+            return self.snapshot(voice_payload)
+        user_line = voice_payload.get("record", {}).get("user_said", "")
+        spoken = str(voice_payload.get("spoken_response", self.last_subtitle))
+        self.last_subtitle = f"You: {user_line}\nULTRON: {spoken}"
+        self.visual_state = "speaking" if not self.voice.status.muted else "idle"
+        return self.snapshot({**voice_payload, "subtitle": self.last_subtitle})
+
+    def voice_status(self) -> dict[str, Any]:
+        return self.snapshot({"status": "ok", **self.voice.snapshot()})
+
+    def speak(self, payload: dict[str, Any]) -> dict[str, Any]:
+        action = str(payload.get("action", "speak"))
+        if action == "stop":
+            self.visual_state = "listening"
+            return self.snapshot(self.voice.stop_speaking())
+        if "muted" in payload:
+            self.voice.set_muted(bool(payload.get("muted")))
+        text = str(payload.get("text") or self.last_subtitle or "").strip()
+        speech = self.voice.speak(text)
+        self.visual_state = "speaking" if speech.get("voice", {}).get("speaking") else self.visual_state
+        return self.snapshot(speech)
 
     def toggle_subtitles(self, enabled: bool | None = None) -> dict[str, Any]:
         self.subtitles_enabled = not self.subtitles_enabled if enabled is None else bool(enabled)
@@ -95,7 +134,7 @@ def build_state(args: argparse.Namespace) -> WebState:
 
 def make_handler(state: WebState, web_root: Path = WEB_ROOT) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
-        server_version = "UltronPhase7/1.0"
+        server_version = "UltronPhase8/1.0"
 
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
@@ -105,6 +144,9 @@ def make_handler(state: WebState, web_root: Path = WEB_ROOT) -> type[BaseHTTPReq
             if parsed.path == "/api/memory":
                 self._json({"status": "ok", "memory": state.brain.memory.list()})
                 return
+            if parsed.path == "/api/voice/status":
+                self._json(state.voice_status())
+                return
             self._serve_static(parsed.path)
 
         def do_POST(self) -> None:  # noqa: N802
@@ -112,6 +154,19 @@ def make_handler(state: WebState, web_root: Path = WEB_ROOT) -> type[BaseHTTPReq
             body = self._read_json()
             if parsed.path == "/api/command":
                 self._json(state.command(str(body.get("command", "")), confirmed=bool(body.get("confirmed", False)), mode=str(body.get("mode", "do"))))
+                return
+            if parsed.path == "/api/voice/start":
+                push_to_talk = body.get("push_to_talk")
+                self._json(state.voice_start(push_to_talk=push_to_talk if isinstance(push_to_talk, bool) else None))
+                return
+            if parsed.path == "/api/voice/stop":
+                self._json(state.voice_stop())
+                return
+            if parsed.path == "/api/voice/transcribe":
+                self._json(state.voice_transcribe(body))
+                return
+            if parsed.path == "/api/speak":
+                self._json(state.speak(body))
                 return
             if parsed.path == "/api/subtitles/toggle":
                 enabled = body.get("enabled")
@@ -176,7 +231,7 @@ def serve(args: argparse.Namespace) -> ThreadingHTTPServer:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Run the ULTRON 2.7 Phase 7 visual interface")
+    parser = argparse.ArgumentParser(description="Run the ULTRON 2.7 visual and voice interface")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--config", type=Path, default=None)
