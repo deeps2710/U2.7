@@ -18,6 +18,7 @@ The repo is built around the supplied research paper and synthetic laptop-comman
 - Safety regression evaluator for high-risk and confirmation-gated examples.
 - Optional LLM planner adapter with Ollama support, strict JSON parsing, schema validation, and safe fallback behavior.
 - Interactive assistant console for repeated commands, confirmations, and JSON inspection.
+- Agentic brain layer for multi-step task planning, safe execution, and non-sensitive memory.
 - Pytest test suite for planner, validation, policy, and execution behavior.
 
 ## Project Layout
@@ -44,6 +45,8 @@ python scripts/analyze_dataset_quality.py
 python scripts/evaluate_safety_regression.py
 python -m ultron27 "launch the basic text editor" --planner-mode hybrid
 python -m ultron27 --interactive
+python -m ultron27 "/plan Create a note called project ideas and add that I should test voice mode next." --text
+python -m ultron27 "/do Create a note called project ideas and add that I should test voice mode next." --text --execute --workspace .
 python -m unittest discover -s tests
 ```
 
@@ -98,6 +101,10 @@ Useful CLI flags:
 ultron "open notepad" --no-audit
 ultron "open notepad" --text
 ultron --interactive
+ultron "/plan create a note called ideas and add that voice mode is next" --text
+ultron "/do create a note called ideas and add that voice mode is next" --text --execute
+ultron "/memory" --text
+ultron "/forget last_note" --text
 ultron "create note standup" --workspace .
 ultron "open notepad" --execute
 ultron "delete project_report.txt" --yes
@@ -185,6 +192,10 @@ Inside the console:
 ```text
 /help              Show console commands.
 /json <command>    Run a command and print the full JSON payload.
+/plan <goal>       Show a safe multi-step plan without executing it.
+/do <goal>         Plan and execute allowed steps through ULTRON's runtime.
+/memory            Show stored non-sensitive memory.
+/forget <query>    Remove matching memory entries.
 /yes <command>     Confirm a command that needs confirmation.
 /exit              Leave the console.
 ```
@@ -200,6 +211,28 @@ Single-command mode still prints JSON by default. Use `--text` for the same conc
 ```powershell
 python -m ultron27 "set volume to 40 percent" --text
 ```
+
+## Phase 6 Brain Layer
+
+Phase 6 adds `UltronBrain`, a task-level reasoning layer for multi-step goals. The brain can decompose a goal into steps, preview the tool calls, execute allowed steps, pause for confirmation, and remember useful non-sensitive context.
+
+Example:
+
+```powershell
+python -m ultron27 "/plan Create a note called project ideas and add that I should test voice mode next." --text
+python -m ultron27 "/do Create a note called project ideas and add that I should test voice mode next." --text --execute --workspace .
+```
+
+Brain commands:
+
+```text
+/plan <goal>       Build a TaskPlan without execution.
+/do <goal>         Execute each allowed step through the safe runtime.
+/memory            Show stored non-sensitive memory.
+/forget <query>    Delete matching memory entries.
+```
+
+The brain stores memory at `.ultron/memory.json` by default. It rejects obvious sensitive keys or values such as passwords, API keys, tokens, credentials, and secrets.
 
 ## Example
 

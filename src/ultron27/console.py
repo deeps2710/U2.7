@@ -4,6 +4,7 @@ import json
 import sys
 from typing import TextIO
 
+from .brain import UltronBrain, format_memory, format_task_plan
 from .runtime import UltronAssistant
 
 
@@ -40,6 +41,10 @@ def help_text() -> str:
             "Commands:",
             "  /help              Show this help.",
             "  /json <command>    Run a command and print the full JSON payload.",
+            "  /plan <goal>       Show a safe multi-step plan without executing it.",
+            "  /do <goal>         Plan and execute allowed steps through ULTRON's runtime.",
+            "  /memory            Show stored non-sensitive memory.",
+            "  /forget <query>    Remove matching memory entries.",
             "  /yes <command>     Confirm a command that needs confirmation.",
             "  /exit              Leave the console.",
         ]
@@ -49,11 +54,14 @@ def help_text() -> str:
 def run_console(
     assistant: UltronAssistant,
     *,
+    brain: UltronBrain | None = None,
     input_stream: TextIO | None = None,
     output_stream: TextIO | None = None,
 ) -> None:
     input_stream = input_stream or sys.stdin
     output_stream = output_stream or sys.stdout
+    if brain is None and isinstance(assistant, UltronAssistant):
+        brain = UltronBrain(assistant)
     print("ULTRON 2.7 interactive console. Type /help or /exit.", file=output_stream)
     while True:
         print("ultron> ", end="", file=output_stream, flush=True)
@@ -74,6 +82,31 @@ def run_console(
         if lowered.startswith("/json "):
             payload = assistant.handle(command[6:].strip())
             print(json.dumps(payload, indent=2, ensure_ascii=True), file=output_stream)
+            continue
+        if lowered.startswith("/plan "):
+            if brain is None:
+                print("Brain commands are unavailable in this console.", file=output_stream)
+                continue
+            print(format_task_plan(brain.plan(command[6:].strip())), file=output_stream)
+            continue
+        if lowered.startswith("/do "):
+            if brain is None:
+                print("Brain commands are unavailable in this console.", file=output_stream)
+                continue
+            print(format_task_plan(brain.execute(command[4:].strip())), file=output_stream)
+            continue
+        if lowered == "/memory":
+            if brain is None:
+                print("Brain commands are unavailable in this console.", file=output_stream)
+                continue
+            print(format_memory(brain.memory.list()), file=output_stream)
+            continue
+        if lowered.startswith("/forget "):
+            if brain is None:
+                print("Brain commands are unavailable in this console.", file=output_stream)
+                continue
+            removed = brain.memory.forget(command[8:].strip())
+            print(f"Forgot {removed} memory item(s).", file=output_stream)
             continue
         confirmed = False
         if lowered.startswith("/yes "):

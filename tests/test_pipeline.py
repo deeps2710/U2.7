@@ -8,6 +8,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 from ultron27.audit import append_audit_record
+from ultron27.brain import MemoryStore, TaskState, UltronBrain
 from ultron27.cli import main
 from ultron27.console import format_assistant_response, run_console
 from ultron27.config import load_config
@@ -365,6 +366,155 @@ class PipelineTest(unittest.TestCase):
         self.assertIn("Commands:", text)
         self.assertIn('"tool_call"', text)
         self.assertIn("Session ended.", text)
+
+    def test_phase6_brain_decomposes_note_goal(self) -> None:
+        settings = RuntimeSettings(
+            dataset_path=Path("data/jarvis_dataset_v2/jarvis_laptop_commands_synthetic_v2.jsonl"),
+            audit_log=Path(".ultron/test-audit.jsonl"),
+            workspace=Path("."),
+            dry_run=True,
+            safe_roots=(Path("."),),
+            app_aliases=None,
+            screenshot_dir=Path(".ultron/screenshots"),
+            planner_mode="rules",
+            llm_model="unused",
+            llm_endpoint="http://localhost:11434",
+            llm_timeout_seconds=1.0,
+            write_audit=False,
+        )
+
+        task = UltronBrain(UltronAssistant(settings)).plan(
+            "Create a note called project ideas and add that I should test voice mode next."
+        )
+
+        self.assertEqual(task.classification, "multi_step")
+        self.assertEqual(len(task.steps), 2)
+        self.assertEqual(task.steps[0].tool_call["name"], "create_note")
+        self.assertEqual(task.steps[1].tool_call["name"], "append_to_note")
+
+    def test_phase6_brain_executes_safe_multistep_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            settings = RuntimeSettings(
+                dataset_path=Path("data/jarvis_dataset_v2/jarvis_laptop_commands_synthetic_v2.jsonl"),
+                audit_log=workspace / ".ultron" / "audit.jsonl",
+                workspace=workspace,
+                dry_run=False,
+                safe_roots=(workspace,),
+                app_aliases=None,
+                screenshot_dir=workspace / ".ultron" / "screenshots",
+                planner_mode="rules",
+                llm_model="unused",
+                llm_endpoint="http://localhost:11434",
+                llm_timeout_seconds=1.0,
+                write_audit=False,
+            )
+
+            task = UltronBrain(UltronAssistant(settings), memory_path=workspace / ".ultron" / "memory.json").execute(
+                "Create a note called project ideas and add that I should test voice mode next."
+            )
+
+            self.assertEqual(task.status, TaskState.COMPLETED)
+            note = workspace / "notes" / "project_ideas.md"
+            self.assertTrue(note.exists())
+            self.assertEqual(note.read_text(encoding="utf-8").strip(), "i should test voice mode next")
+
+    def test_phase6_brain_high_risk_waits_for_confirmation(self) -> None:
+        settings = RuntimeSettings(
+            dataset_path=Path("data/jarvis_dataset_v2/jarvis_laptop_commands_synthetic_v2.jsonl"),
+            audit_log=Path(".ultron/test-audit.jsonl"),
+            workspace=Path("."),
+            dry_run=True,
+            safe_roots=(Path("."),),
+            app_aliases=None,
+            screenshot_dir=Path(".ultron/screenshots"),
+            planner_mode="rules",
+            llm_model="unused",
+            llm_endpoint="http://localhost:11434",
+            llm_timeout_seconds=1.0,
+            write_audit=False,
+        )
+
+        task = UltronBrain(UltronAssistant(settings)).execute("delete project_report.txt")
+
+        self.assertEqual(task.status, TaskState.WAITING_FOR_CONFIRMATION)
+        self.assertEqual(task.steps[0].result["status"], "confirmation_required")
+
+    def test_phase6_memory_write_read_and_forget(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = MemoryStore(Path(tmp) / "memory.json")
+
+            stored = memory.remember("preferred_editor", "notepad", kind="preference")
+            rejected = memory.remember("api_key", "secret value", kind="secret")
+
+            self.assertTrue(stored)
+            self.assertFalse(rejected)
+            self.assertEqual(memory.list()[0]["value"], "notepad")
+            self.assertEqual(memory.forget("editor"), 1)
+            self.assertEqual(memory.list(), [])
+
+    def test_phase6_brain_marks_failed_tool_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            settings = RuntimeSettings(
+                dataset_path=Path("data/jarvis_dataset_v2/jarvis_laptop_commands_synthetic_v2.jsonl"),
+                audit_log=workspace / ".ultron" / "audit.jsonl",
+                workspace=workspace,
+                dry_run=False,
+                safe_roots=(workspace,),
+                app_aliases=None,
+                screenshot_dir=workspace / ".ultron" / "screenshots",
+                planner_mode="rules",
+                llm_model="unused",
+                llm_endpoint="http://localhost:11434",
+                llm_timeout_seconds=1.0,
+                write_audit=False,
+            )
+
+            task = UltronBrain(UltronAssistant(settings), memory_path=workspace / ".ultron" / "memory.json").execute(
+                "set volume to 40 percent"
+            )
+
+            self.assertEqual(task.status, TaskState.FAILED)
+            self.assertEqual(task.steps[0].result["status"], "not_implemented")
+
+    def test_phase6_brain_writes_task_audit_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            audit_path = workspace / ".ultron" / "audit.jsonl"
+            settings = RuntimeSettings(
+                dataset_path=Path("data/jarvis_dataset_v2/jarvis_laptop_commands_synthetic_v2.jsonl"),
+                audit_log=audit_path,
+                workspace=workspace,
+                dry_run=True,
+                safe_roots=(workspace,),
+                app_aliases=None,
+                screenshot_dir=workspace / ".ultron" / "screenshots",
+                planner_mode="rules",
+                llm_model="unused",
+                llm_endpoint="http://localhost:11434",
+                llm_timeout_seconds=1.0,
+                write_audit=True,
+            )
+
+            UltronBrain(UltronAssistant(settings), memory_path=workspace / ".ultron" / "memory.json").execute(
+                "create note project ideas"
+            )
+
+            records = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+
+            self.assertTrue(any(record.get("record_type") == "brain_task" for record in records))
+
+    def test_phase6_cli_plan_command_outputs_task_plan(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            main(["/plan create a note called ideas and add that voice mode is next", "--text", "--no-audit"])
+
+        text = output.getvalue()
+
+        self.assertIn("Status: pending", text)
+        self.assertIn("Tool: create_note", text)
+        self.assertIn("Tool: append_to_note", text)
 
 
 if __name__ == "__main__":

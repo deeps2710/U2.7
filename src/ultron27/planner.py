@@ -116,6 +116,12 @@ def regex_plan(utterance: str) -> Plan:
         title = note_match.group(1).strip()
         return _plan_from_tool(utterance, "create_note", "create_note", {"title": title, "content": ""}, "regex", 0.70)
 
+    append_note_match = re.search(r"\b(?:append|add)\s+(?:that\s+)?(.+?)\s+to\s+(?:the\s+)?note\s+(.+)", text)
+    if append_note_match:
+        content = append_note_match.group(1).strip()
+        title = append_note_match.group(2).strip()
+        return _plan_from_tool(utterance, "append_note", "append_to_note", {"title": title, "content": content}, "regex", 0.70)
+
     reminder_match = re.search(r"\bremind\s+me\s+to\s+(.+?)\s+(?:at|on|in)\s+(.+)", text)
     if reminder_match:
         return _plan_from_tool(

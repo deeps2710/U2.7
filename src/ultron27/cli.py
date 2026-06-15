@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
+from .brain import UltronBrain, format_memory, format_task_plan
 from .config import load_config
 from .console import format_assistant_response, run_console
 from .runtime import RuntimeSettings, UltronAssistant
@@ -59,18 +60,39 @@ def main(argv: list[str] | None = None) -> None:
         assistant = UltronAssistant(settings)
     except FileNotFoundError as exc:
         parser.error(str(exc))
+    brain = UltronBrain(assistant)
 
     if args.interactive:
         if args.utterance:
             payload = assistant.handle(" ".join(args.utterance), confirmed=args.yes)
             print(format_assistant_response(payload))
-        run_console(assistant)
+        run_console(assistant, brain=brain)
         return
 
     if not args.utterance:
         parser.error("utterance is required unless --interactive is used")
 
-    payload = assistant.handle(" ".join(args.utterance), confirmed=args.yes)
+    command = " ".join(args.utterance)
+    lowered = command.lower()
+    if lowered.startswith("/plan "):
+        task = brain.plan(command[6:].strip())
+        print(format_task_plan(task) if args.text else json.dumps(task.to_dict(), indent=2, ensure_ascii=True))
+        return
+    if lowered.startswith("/do "):
+        task = brain.execute(command[4:].strip(), confirmed=args.yes)
+        print(format_task_plan(task) if args.text else json.dumps(task.to_dict(), indent=2, ensure_ascii=True))
+        return
+    if lowered == "/memory":
+        items = brain.memory.list()
+        print(format_memory(items) if args.text else json.dumps(items, indent=2, ensure_ascii=True))
+        return
+    if lowered.startswith("/forget "):
+        removed = brain.memory.forget(command[8:].strip())
+        payload = {"forgot": removed}
+        print(f"Forgot {removed} memory item(s)." if args.text else json.dumps(payload, indent=2, ensure_ascii=True))
+        return
+
+    payload = assistant.handle(command, confirmed=args.yes)
     if args.text:
         print(format_assistant_response(payload))
     else:

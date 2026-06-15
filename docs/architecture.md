@@ -23,6 +23,20 @@ dataset/rules planner -> optional LLM planner -> typed tool call
 
 The optional LLM planner is only allowed to propose a JSON tool call. The validator, policy layer, confirmation gates, and executor remain authoritative.
 
+Phase 6 adds a task-level brain above the runtime:
+
+```text
+user goal -> brain -> TaskPlan -> safe runtime step(s)
+```
+
+Each runtime step still uses the original command pipeline:
+
+```text
+step utterance -> planner -> typed tool call -> validator -> policy -> executor -> audit log
+```
+
+The brain can plan multi-step tasks, pause on confirmation gates, summarize outcomes, and store non-sensitive memory. It cannot bypass validation, policy, executor restrictions, or audit logging.
+
 ## Core Principles
 
 - Local-first by default.
@@ -34,6 +48,8 @@ The optional LLM planner is only allowed to propose a JSON tool call. The valida
 - Real execution is limited to low-risk, allowlisted tools.
 - File tools are restricted to configured safe roots.
 - LLM output is treated as untrusted input until it passes schema validation and policy.
+- The brain is orchestration only; it does not receive raw shell access.
+- Persistent memory rejects obvious sensitive content such as passwords, API keys, tokens, credentials, and secrets.
 
 ## Risk Levels
 
@@ -60,6 +76,19 @@ Implemented low-risk execution includes:
 - screenshot capture when Pillow/ImageGrab is available.
 
 High-risk operations such as file deletion, sending email, script execution, shutdown, and restart remain non-destructive. Even if the policy receives confirmation, the executor returns `not_implemented` for destructive actions.
+
+## Phase 6 Brain Boundary
+
+The brain owns task-level orchestration, not raw execution. It can:
+
+- decompose a user goal into one or more step utterances,
+- preview the selected tool and policy decision for each step,
+- execute steps through `UltronAssistant.handle()`,
+- stop when a step requires confirmation, fails, or is blocked,
+- write a task-level audit record,
+- store small non-sensitive memory facts under `.ultron/memory.json`.
+
+It cannot directly call the OS, run shell commands, skip policy, skip schema validation, or treat an LLM response as trusted execution authority.
 
 ## Dataset Role
 
