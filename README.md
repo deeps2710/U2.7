@@ -19,12 +19,14 @@ The repo is built around the supplied research paper and synthetic laptop-comman
 - Optional LLM planner adapter with Ollama support, strict JSON parsing, schema validation, and safe fallback behavior.
 - Interactive assistant console for repeated commands, confirmations, and JSON inspection.
 - Agentic brain layer for multi-step task planning, safe execution, and non-sensitive memory.
+- Cyberpunk green plasma-sphere web interface backed by the local brain/runtime API.
 - Pytest test suite for planner, validation, policy, and execution behavior.
 
 ## Project Layout
 
 ```text
 src/ultron27/            Assistant package
+web/                     Phase 7 visual interface
 scripts/                 Utility scripts
 tests/                   Safety and planner tests
 data/jarvis_dataset_v2/  Supplied synthetic command dataset
@@ -47,6 +49,7 @@ python -m ultron27 "launch the basic text editor" --planner-mode hybrid
 python -m ultron27 --interactive
 python -m ultron27 "/plan Create a note called project ideas and add that I should test voice mode next." --text
 python -m ultron27 "/do Create a note called project ideas and add that I should test voice mode next." --text --execute --workspace .
+python scripts/run_phase7_ui.py --port 8765
 python -m unittest discover -s tests
 ```
 
@@ -105,6 +108,7 @@ ultron "/plan create a note called ideas and add that voice mode is next" --text
 ultron "/do create a note called ideas and add that voice mode is next" --text --execute
 ultron "/memory" --text
 ultron "/forget last_note" --text
+ultron-ui --port 8765
 ultron "create note standup" --workspace .
 ultron "open notepad" --execute
 ultron "delete project_report.txt" --yes
@@ -233,6 +237,42 @@ Brain commands:
 ```
 
 The brain stores memory at `.ultron/memory.json` by default. It rejects obvious sensitive keys or values such as passwords, API keys, tokens, credentials, and secrets.
+
+## Phase 7 Visual Interface
+
+Phase 7 adds a local web interface with a black cyberpunk scene, green particle field, and animated Three.js plasma sphere.
+
+Run it with:
+
+```powershell
+python scripts/run_phase7_ui.py --port 8765
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8765
+```
+
+The interface includes:
+
+- listening state: contracted calmer sphere,
+- thinking state: spiraling green eclipse/ring animation,
+- speaking state: expanded plasma lines and stronger glow,
+- live subtitles below the sphere,
+- subtitles on/off toggle,
+- typed command input and Send button,
+- development controls for Listening, Thinking, Speaking, and Idle.
+
+Local API endpoints:
+
+```text
+POST /api/command
+GET  /api/status
+GET  /api/memory
+POST /api/subtitles/toggle
+POST /api/state
+```
 
 ## Example
 

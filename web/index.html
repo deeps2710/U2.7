@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ULTRON 2.7 Interface</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <canvas id="ultron-scene" aria-label="ULTRON animated plasma sphere"></canvas>
+    <div class="digital-noise" aria-hidden="true"></div>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">ULTRON 2.7</p>
+          <h1>Neural Interface</h1>
+        </div>
+        <div class="status-strip">
+          <span id="statusDot" class="status-dot"></span>
+          <span id="statusLabel">Idle</span>
+        </div>
+      </header>
+
+      <section class="stage" aria-label="Assistant visual state">
+        <div class="sphere-space"></div>
+      </section>
+
+      <section class="subtitles" id="subtitlePanel" aria-live="polite">
+        <div class="subtitle-header">
+          <span>Live subtitles</span>
+          <button id="subtitleToggle" type="button" aria-pressed="true">On</button>
+        </div>
+        <p id="subtitleText">ULTRON 2.7 online.</p>
+      </section>
+
+      <section class="command-row" aria-label="Command input">
+        <input id="commandInput" type="text" autocomplete="off" placeholder="Type a command for ULTRON..." />
+        <button id="sendButton" type="button">Send</button>
+      </section>
+
+      <nav class="state-controls" aria-label="Visual state controls">
+        <button data-state="listening" type="button">Listening</button>
+        <button data-state="thinking" type="button">Thinking</button>
+        <button data-state="speaking" type="button">Speaking</button>
+        <button data-state="idle" type="button">Idle</button>
+      </nav>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

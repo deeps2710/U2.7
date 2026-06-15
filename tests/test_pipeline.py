@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import io
 import json
+import threading
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+from urllib.request import Request, urlopen
 
 from ultron27.audit import append_audit_record
 from ultron27.brain import MemoryStore, TaskState, UltronBrain
@@ -20,6 +23,7 @@ from ultron27.planner import DatasetPlanner, regex_plan
 from ultron27.policy import decide
 from ultron27.runtime import RuntimeSettings, UltronAssistant
 from ultron27.tools import validate_tool_call
+from ultron27.web_server import WebState, make_handler
 
 
 class PipelineTest(unittest.TestCase):
@@ -515,6 +519,95 @@ class PipelineTest(unittest.TestCase):
         self.assertIn("Status: pending", text)
         self.assertIn("Tool: create_note", text)
         self.assertIn("Tool: append_to_note", text)
+
+    def test_phase7_web_state_processes_command(self) -> None:
+        settings = RuntimeSettings(
+            dataset_path=Path("data/jarvis_dataset_v2/jarvis_laptop_commands_synthetic_v2.jsonl"),
+            audit_log=Path(".ultron/test-audit.jsonl"),
+            workspace=Path("."),
+            dry_run=True,
+            safe_roots=(Path("."),),
+            app_aliases=None,
+            screenshot_dir=Path(".ultron/screenshots"),
+            planner_mode="rules",
+            llm_model="unused",
+            llm_endpoint="http://localhost:11434",
+            llm_timeout_seconds=1.0,
+            write_audit=False,
+        )
+
+        state = WebState(UltronBrain(UltronAssistant(settings)))
+        payload = state.command("create note visual interface")
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["visual_state"], "speaking")
+        self.assertEqual(payload["task"]["steps"][0]["tool_call"]["name"], "create_note")
+
+    def test_phase7_subtitle_toggle_updates_state(self) -> None:
+        settings = RuntimeSettings(
+            dataset_path=Path("data/jarvis_dataset_v2/jarvis_laptop_commands_synthetic_v2.jsonl"),
+            audit_log=Path(".ultron/test-audit.jsonl"),
+            workspace=Path("."),
+            dry_run=True,
+            safe_roots=(Path("."),),
+            app_aliases=None,
+            screenshot_dir=Path(".ultron/screenshots"),
+            planner_mode="rules",
+            llm_model="unused",
+            llm_endpoint="http://localhost:11434",
+            llm_timeout_seconds=1.0,
+            write_audit=False,
+        )
+
+        state = WebState(UltronBrain(UltronAssistant(settings)))
+        payload = state.toggle_subtitles(False)
+
+        self.assertFalse(payload["subtitles_enabled"])
+        self.assertFalse(state.subtitles_enabled)
+
+    def test_phase7_static_ui_uses_local_three_module(self) -> None:
+        app = Path("web/app.js").read_text(encoding="utf-8")
+        html = Path("web/index.html").read_text(encoding="utf-8")
+
+        self.assertIn("./vendor/three.module.min.js", app)
+        self.assertIn("ultron-scene", html)
+        self.assertIn("subtitleToggle", html)
+
+    def test_phase7_api_status_and_subtitle_toggle(self) -> None:
+        settings = RuntimeSettings(
+            dataset_path=Path("data/jarvis_dataset_v2/jarvis_laptop_commands_synthetic_v2.jsonl"),
+            audit_log=Path(".ultron/test-audit.jsonl"),
+            workspace=Path("."),
+            dry_run=True,
+            safe_roots=(Path("."),),
+            app_aliases=None,
+            screenshot_dir=Path(".ultron/screenshots"),
+            planner_mode="rules",
+            llm_model="unused",
+            llm_endpoint="http://localhost:11434",
+            llm_timeout_seconds=1.0,
+            write_audit=False,
+        )
+        state = WebState(UltronBrain(UltronAssistant(settings)))
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(state))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            status = json.loads(urlopen(base + "/api/status", timeout=5).read().decode("utf-8"))
+            request = Request(
+                base + "/api/subtitles/toggle",
+                data=json.dumps({"enabled": False}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            toggled = json.loads(urlopen(request, timeout=5).read().decode("utf-8"))
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        self.assertEqual(status["status"], "ok")
+        self.assertFalse(toggled["subtitles_enabled"])
 
 
 if __name__ == "__main__":

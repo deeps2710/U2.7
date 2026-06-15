@@ -16,6 +16,7 @@ dev = ["pytest>=8.0"]
 
 [project.scripts]
 ultron = "ultron27.cli:main"
+ultron-ui = "ultron27.web_server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -23,4 +24,3 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-

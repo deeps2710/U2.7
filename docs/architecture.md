@@ -37,6 +37,14 @@ step utterance -> planner -> typed tool call -> validator -> policy -> executor 
 
 The brain can plan multi-step tasks, pause on confirmation gates, summarize outcomes, and store non-sensitive memory. It cannot bypass validation, policy, executor restrictions, or audit logging.
 
+Phase 7 adds a local visual interface above the same brain/runtime boundary:
+
+```text
+web UI -> local API -> brain -> TaskPlan -> safe runtime step(s)
+```
+
+The browser interface can change visual state, send typed commands, show subtitles, and inspect memory through typed API endpoints. It is not an execution authority. Command execution still flows through the brain and the existing safe runtime.
+
 ## Core Principles
 
 - Local-first by default.
@@ -89,6 +97,27 @@ The brain owns task-level orchestration, not raw execution. It can:
 - store small non-sensitive memory facts under `.ultron/memory.json`.
 
 It cannot directly call the OS, run shell commands, skip policy, skip schema validation, or treat an LLM response as trusted execution authority.
+
+## Phase 7 Visual Interface Boundary
+
+The visual interface is a client of the local API in `src/ultron27/web_server.py`. The UI provides:
+
+- `POST /api/command` for typed commands,
+- `GET /api/status` for current visual/runtime state,
+- `GET /api/memory` for non-sensitive memory inspection,
+- `POST /api/subtitles/toggle` for subtitle visibility,
+- `POST /api/state` for development-only visual state testing.
+
+The frontend lives under `web/` and uses Three.js for the animated green plasma sphere and particle field. The sphere states map to assistant state rather than policy decisions:
+
+| State | Visual Behavior | Runtime Meaning |
+|---|---|---|
+| idle | steady sphere and background particles | waiting for interaction |
+| listening | slightly contracted sphere and calmer glow | user input is expected |
+| thinking | orbiting green eclipse rings and active particles | a command is being planned or executed |
+| speaking | expanded glow and crawling plasma arcs | ULTRON is presenting the result |
+
+The UI never receives raw shell access and does not run tools directly. `/api/command` sends the user goal to `UltronBrain`, which routes each step through the planner, validator, policy gate, executor, and audit log.
 
 ## Dataset Role
 

@@ -1,0 +1,323 @@
+import * as THREE from "./vendor/three.module.min.js";
+
+const canvas = document.getElementById("ultron-scene");
+const subtitlePanel = document.getElementById("subtitlePanel");
+const subtitleText = document.getElementById("subtitleText");
+const subtitleToggle = document.getElementById("subtitleToggle");
+const commandInput = document.getElementById("commandInput");
+const sendButton = document.getElementById("sendButton");
+const statusLabel = document.getElementById("statusLabel");
+const stateButtons = [...document.querySelectorAll("[data-state]")];
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(44, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(0, 0.08, 4.35);
+
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setClearColor(0x000000, 0);
+
+const clock = new THREE.Clock();
+const stateTargets = {
+  idle: { scale: 1.0, ring: 0.25, line: 0.45, particle: 0.08, glow: 1.0 },
+  listening: { scale: 0.88, ring: 0.36, line: 0.32, particle: 0.04, glow: 0.78 },
+  thinking: { scale: 1.0, ring: 1.0, line: 0.62, particle: 0.14, glow: 1.12 },
+  speaking: { scale: 1.1, ring: 0.55, line: 1.0, particle: 0.22, glow: 1.36 },
+};
+
+let visualState = "idle";
+let subtitlesEnabled = true;
+let returnTimer = null;
+
+const root = new THREE.Group();
+root.position.y = 0.32;
+scene.add(root);
+
+const sphereUniforms = {
+  time: { value: 0 },
+  intensity: { value: 0.7 },
+};
+
+const sphere = new THREE.Mesh(
+  new THREE.IcosahedronGeometry(1.03, 8),
+  new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    uniforms: sphereUniforms,
+    vertexShader: `
+      varying vec3 vNormal;
+      varying vec3 vPosition;
+      void main() {
+        vNormal = normalize(normalMatrix * normal);
+        vPosition = position;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform float time;
+      uniform float intensity;
+      varying vec3 vNormal;
+      varying vec3 vPosition;
+      void main() {
+        float rim = pow(1.0 - abs(dot(vNormal, vec3(0.0, 0.0, 1.0))), 2.45);
+        float plasma = sin(vPosition.x * 9.0 + time * 1.8) * sin(vPosition.y * 7.0 - time * 1.4);
+        float veins = smoothstep(0.72, 0.98, abs(plasma));
+        vec3 deep = vec3(0.0, 0.11, 0.045);
+        vec3 neon = vec3(0.0, 1.0, 0.38);
+        vec3 lime = vec3(0.58, 1.0, 0.18);
+        vec3 color = mix(deep, neon, rim * 1.4 + veins * 0.45);
+        color = mix(color, lime, veins * 0.35);
+        float alpha = 0.12 + rim * 0.58 + veins * 0.14;
+        gl_FragColor = vec4(color * intensity, alpha);
+      }
+    `,
+  })
+);
+root.add(sphere);
+
+const glow = new THREE.Sprite(
+  new THREE.SpriteMaterial({
+    map: makeGlowTexture(),
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    opacity: 0.64,
+    depthWrite: false,
+  })
+);
+glow.scale.set(3.15, 3.15, 1);
+root.add(glow);
+
+const plasmaLines = new THREE.Group();
+for (let i = 0; i < 24; i += 1) {
+  plasmaLines.add(makeArc(i));
+}
+root.add(plasmaLines);
+
+const ringGroup = new THREE.Group();
+for (let i = 0; i < 5; i += 1) {
+  const arc = i % 2 === 0 ? Math.PI * 2 : Math.PI * 1.42;
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(1.18 + i * 0.045, 0.006 + i * 0.001, 10, 180, arc),
+    new THREE.MeshBasicMaterial({
+      color: i % 2 === 0 ? 0x00ff66 : 0xa6ff3f,
+      transparent: true,
+      opacity: 0.26,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    })
+  );
+  ring.rotation.set(Math.PI / 2 + i * 0.22, i * 0.46, i * 0.31);
+  ringGroup.add(ring);
+}
+root.add(ringGroup);
+
+const particles = makeParticles();
+scene.add(particles);
+
+const fill = new THREE.PointLight(0x00ff66, 1.4, 7);
+fill.position.set(1.8, 1.2, 2.4);
+scene.add(fill);
+
+setVisualState("idle", { sync: false });
+loadStatus();
+animate();
+
+stateButtons.forEach((button) => {
+  button.addEventListener("click", () => setVisualState(button.dataset.state));
+});
+
+subtitleToggle.addEventListener("click", async () => {
+  subtitlesEnabled = !subtitlesEnabled;
+  updateSubtitles();
+  try {
+    await fetch("/api/subtitles/toggle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: subtitlesEnabled }),
+    });
+  } catch {
+    // The local visual toggle should keep working even if the API is not ready.
+  }
+});
+
+sendButton.addEventListener("click", sendCommand);
+commandInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    sendCommand();
+  }
+});
+
+window.addEventListener("resize", () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+async function sendCommand() {
+  const command = commandInput.value.trim();
+  if (!command) return;
+  commandInput.value = "";
+  setSubtitle(`Processing: ${command}`);
+  setVisualState("thinking");
+  try {
+    const response = await fetch("/api/command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command, mode: "do" }),
+    });
+    const payload = await response.json();
+    const spoken = payload.subtitle || buildTaskSubtitle(payload.task) || payload.message || "Command processed.";
+    setSubtitle(spoken);
+    setVisualState("speaking");
+    window.clearTimeout(returnTimer);
+    returnTimer = window.setTimeout(() => setVisualState("listening"), 3200);
+  } catch {
+    setSubtitle("Local interface could not reach the ULTRON runtime.");
+    setVisualState("idle");
+  }
+}
+
+async function loadStatus() {
+  try {
+    const response = await fetch("/api/status");
+    const payload = await response.json();
+    subtitlesEnabled = Boolean(payload.subtitles_enabled);
+    setSubtitle(payload.last_subtitle || "ULTRON 2.7 online.");
+    setVisualState(payload.visual_state || "idle", { sync: false });
+    updateSubtitles();
+  } catch {
+    setSubtitle("ULTRON visual shell loaded. Runtime API pending.");
+  }
+}
+
+function setVisualState(state, options = {}) {
+  if (!stateTargets[state]) state = "idle";
+  visualState = state;
+  document.body.className = `state-${state}`;
+  statusLabel.textContent = state.charAt(0).toUpperCase() + state.slice(1);
+  stateButtons.forEach((button) => button.classList.toggle("is-active", button.dataset.state === state));
+  if (options.sync !== false) {
+    fetch("/api/state", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state }),
+    }).catch(() => {});
+  }
+}
+
+function setSubtitle(text) {
+  subtitleText.textContent = text;
+}
+
+function updateSubtitles() {
+  subtitlePanel.classList.toggle("is-hidden", !subtitlesEnabled);
+  subtitleToggle.textContent = subtitlesEnabled ? "On" : "Off";
+  subtitleToggle.setAttribute("aria-pressed", String(subtitlesEnabled));
+}
+
+function buildTaskSubtitle(task) {
+  if (!task) return "";
+  if (task.summary) return task.summary;
+  return `Task ${task.status || "updated"}.`;
+}
+
+function animate() {
+  const elapsed = clock.getElapsedTime();
+  const target = stateTargets[visualState];
+  const pulse = 1 + Math.sin(elapsed * (visualState === "listening" ? 2.0 : 3.8)) * 0.018;
+  const sphereScale = target.scale * pulse;
+
+  root.scale.lerp(new THREE.Vector3(sphereScale, sphereScale, sphereScale), 0.08);
+  root.rotation.y += 0.002 + target.ring * 0.004;
+  root.rotation.x = Math.sin(elapsed * 0.35) * 0.035;
+  sphere.rotation.y -= 0.002;
+  sphereUniforms.time.value = elapsed;
+  sphereUniforms.intensity.value += (target.glow - sphereUniforms.intensity.value) * 0.08;
+  glow.material.opacity += ((0.42 + target.glow * 0.22) - glow.material.opacity) * 0.08;
+  glow.scale.setScalar(2.75 + target.glow * 0.38 + Math.sin(elapsed * 2.2) * 0.04);
+
+  plasmaLines.children.forEach((line, i) => {
+    line.material.opacity += ((target.line * (0.36 + (i % 5) * 0.08)) - line.material.opacity) * 0.08;
+    line.rotation.z += (visualState === "speaking" ? 0.006 : 0.002) * (i % 2 ? 1 : -1);
+  });
+
+  ringGroup.children.forEach((ring, i) => {
+    ring.material.opacity += ((visualState === "thinking" ? 0.72 : target.ring * 0.24) - ring.material.opacity) * 0.08;
+    ring.rotation.z += (0.006 + i * 0.0015) * (visualState === "thinking" ? 2.8 : 0.7);
+    ring.rotation.x += 0.0015 * (i % 2 ? 1 : -1);
+  });
+
+  particles.rotation.y += target.particle * 0.003;
+  particles.rotation.x = Math.sin(elapsed * 0.11) * 0.07;
+  particles.material.opacity += ((visualState === "speaking" ? 0.75 : 0.42) - particles.material.opacity) * 0.04;
+
+  renderer.render(scene, camera);
+  requestAnimationFrame(animate);
+}
+
+function makeArc(seed) {
+  const points = [];
+  const radius = 1.055 + (seed % 4) * 0.006;
+  const basePhi = 0.38 + ((seed * 37) % 180) / 180 * Math.PI * 0.72;
+  const baseTheta = ((seed * 53) % 360) / 360 * Math.PI * 2;
+  const length = 0.7 + ((seed * 29) % 100) / 100 * 1.6;
+  for (let i = 0; i < 42; i += 1) {
+    const t = i / 41;
+    const wobble = Math.sin(t * Math.PI * 4 + seed) * 0.06;
+    const phi = Math.max(0.18, Math.min(Math.PI - 0.18, basePhi + Math.sin(t * Math.PI * 2 + seed) * 0.22));
+    const theta = baseTheta + t * length + wobble;
+    points.push(new THREE.Vector3().setFromSpherical(new THREE.Spherical(radius, phi, theta)));
+  }
+  const material = new THREE.LineBasicMaterial({
+    color: seed % 3 === 0 ? 0xa6ff3f : 0x00ff66,
+    transparent: true,
+    opacity: 0.35,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  return new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), material);
+}
+
+function makeParticles() {
+  const count = 780;
+  const positions = new Float32Array(count * 3);
+  for (let i = 0; i < count; i += 1) {
+    const radius = 3.5 + Math.random() * 8.5;
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos(2 * Math.random() - 1);
+    positions[i * 3] = Math.sin(phi) * Math.cos(theta) * radius;
+    positions[i * 3 + 1] = Math.sin(phi) * Math.sin(theta) * radius * 0.72;
+    positions[i * 3 + 2] = Math.cos(phi) * radius - 2.2;
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  return new THREE.Points(
+    geometry,
+    new THREE.PointsMaterial({
+      color: 0x00ff66,
+      size: 0.025,
+      transparent: true,
+      opacity: 0.42,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    })
+  );
+}
+
+function makeGlowTexture() {
+  const size = 256;
+  const glowCanvas = document.createElement("canvas");
+  glowCanvas.width = size;
+  glowCanvas.height = size;
+  const ctx = glowCanvas.getContext("2d");
+  const gradient = ctx.createRadialGradient(size / 2, size / 2, 8, size / 2, size / 2, size / 2);
+  gradient.addColorStop(0, "rgba(0,255,102,0.78)");
+  gradient.addColorStop(0.34, "rgba(0,255,102,0.26)");
+  gradient.addColorStop(0.68, "rgba(0,255,102,0.07)");
+  gradient.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, size, size);
+  return new THREE.CanvasTexture(glowCanvas);
+}
