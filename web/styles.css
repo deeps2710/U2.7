@@ -50,7 +50,7 @@ body {
   z-index: 2;
   min-height: 100vh;
   display: grid;
-  grid-template-rows: auto minmax(220px, 1fr) auto auto auto auto auto;
+  grid-template-rows: auto minmax(220px, 1fr) auto auto auto auto auto auto;
   padding: 24px clamp(20px, 5vw, 72px) 22px;
 }
 
@@ -88,6 +88,7 @@ h1 {
 .subtitles,
 .voice-console,
 .provider-panel,
+.wake-panel,
 .command-row,
 .voice-history,
 .state-controls {
@@ -166,6 +167,7 @@ h1 {
 
 .voice-console,
 .provider-panel,
+.wake-panel,
 .command-row,
 .voice-history,
 .state-controls {
@@ -175,7 +177,7 @@ h1 {
 
 .voice-console {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
 }
 
 .provider-panel {
@@ -203,6 +205,38 @@ h1 {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.wake-panel {
+  min-height: 62px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.wake-panel div {
+  min-width: 0;
+  padding: 10px 14px;
+  border-right: 1px solid rgba(0, 255, 102, 0.18);
+  display: grid;
+  gap: 2px;
+}
+
+.wake-panel div:last-child,
+.provider-panel div:last-of-type {
+  border-right: 0;
+}
+
+.wake-panel span,
+.wake-panel small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.wake-panel strong {
+  min-width: 0;
   color: var(--text);
   font-size: 14px;
   font-weight: 600;
@@ -296,6 +330,15 @@ body.state-listening .status-dot {
   background: #7dffb2;
 }
 
+body.state-waiting_for_wake_word .status-dot {
+  background: #2aff7f;
+  box-shadow: 0 0 10px rgba(42, 255, 127, 0.72);
+}
+
+body.state-transcribing .status-dot {
+  background: #c8ff5a;
+}
+
 body.state-thinking .status-dot {
   background: var(--lime);
 }
@@ -312,7 +355,7 @@ body.state-speaking .status-dot {
   .shell {
     min-height: 100svh;
     padding: 18px 14px;
-    grid-template-rows: auto minmax(220px, 38vh) auto auto auto auto auto;
+    grid-template-rows: auto minmax(220px, 38vh) auto auto auto auto auto auto;
   }
 
   .topbar {
@@ -329,6 +372,10 @@ body.state-speaking .status-dot {
 
   .provider-panel {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .wake-panel {
+    grid-template-columns: 1fr;
   }
 
   .command-row {

@@ -9,6 +9,7 @@ const sendButton = document.getElementById("sendButton");
 const statusLabel = document.getElementById("statusLabel");
 const voiceBadge = document.getElementById("voiceBadge");
 const micToggle = document.getElementById("micToggle");
+const alwaysListeningToggle = document.getElementById("alwaysListeningToggle");
 const pushToTalkToggle = document.getElementById("pushToTalkToggle");
 const muteToggle = document.getElementById("muteToggle");
 const stopSpeakingButton = document.getElementById("stopSpeakingButton");
@@ -20,6 +21,12 @@ const ttsProviderLabel = document.getElementById("ttsProviderLabel");
 const ttsProviderDetail = document.getElementById("ttsProviderDetail");
 const refreshProvidersButton = document.getElementById("refreshProvidersButton");
 const testProvidersButton = document.getElementById("testProvidersButton");
+const micStatusLabel = document.getElementById("micStatusLabel");
+const micPrivacyDetail = document.getElementById("micPrivacyDetail");
+const wakeStateLabel = document.getElementById("wakeStateLabel");
+const wakeDetail = document.getElementById("wakeDetail");
+const vadStateLabel = document.getElementById("vadStateLabel");
+const vadDetail = document.getElementById("vadDetail");
 const voiceHistory = document.getElementById("voiceHistory");
 const stateButtons = [...document.querySelectorAll("[data-state]")];
 
@@ -34,8 +41,11 @@ renderer.setClearColor(0x000000, 0);
 
 const clock = new THREE.Clock();
 const stateTargets = {
+  inactive: { scale: 1.0, ring: 0.18, line: 0.36, particle: 0.06, glow: 0.86 },
   idle: { scale: 1.0, ring: 0.25, line: 0.45, particle: 0.08, glow: 1.0 },
+  waiting_for_wake_word: { scale: 0.94, ring: 0.28, line: 0.28, particle: 0.035, glow: 0.72 },
   listening: { scale: 0.88, ring: 0.36, line: 0.32, particle: 0.04, glow: 0.78 },
+  transcribing: { scale: 0.98, ring: 0.68, line: 0.48, particle: 0.12, glow: 1.0 },
   thinking: { scale: 1.0, ring: 1.0, line: 0.62, particle: 0.14, glow: 1.12 },
   speaking: { scale: 1.1, ring: 0.55, line: 1.0, particle: 0.22, glow: 1.36 },
 };
@@ -49,6 +59,7 @@ let returnTimer = null;
 let recognition = null;
 let recognitionActive = false;
 let providerStatus = null;
+let alwaysListening = false;
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
@@ -180,6 +191,14 @@ pushToTalkToggle.addEventListener("click", () => {
   pushToTalkToggle.setAttribute("aria-pressed", String(pushToTalk));
 });
 
+alwaysListeningToggle.addEventListener("click", () => {
+  if (alwaysListening) {
+    stopAlwaysListening();
+  } else {
+    startAlwaysListening();
+  }
+});
+
 muteToggle.addEventListener("click", async () => {
   voiceMuted = !voiceMuted;
   muteToggle.textContent = voiceMuted ? "Muted" : "Mute Off";
@@ -242,8 +261,10 @@ async function loadStatus() {
     updateSubtitles();
     const voicePayload = await fetchJson("/api/voice/status");
     applyVoiceStatus(voicePayload.voice);
+    applyWakeStatus(voicePayload.wake);
     renderHistory(voicePayload.history || []);
     await loadProviders();
+    await loadWakeStatus();
   } catch {
     setSubtitle("ULTRON visual shell loaded. Runtime API pending.");
   }
@@ -257,6 +278,43 @@ async function loadProviders() {
     providerStatus = null;
     sttProviderDetail.textContent = "Runtime API pending";
     ttsProviderDetail.textContent = "Runtime API pending";
+  }
+}
+
+async function loadWakeStatus() {
+  try {
+    const payload = await fetchJson("/api/wake/status");
+    applyWakeStatus(payload.wake);
+  } catch {
+    wakeStateLabel.textContent = "Pending";
+    wakeDetail.textContent = "Wake API pending";
+  }
+}
+
+async function startAlwaysListening() {
+  alwaysListening = true;
+  const payload = await postJson("/api/wake/start", {});
+  applyVoiceStatus(payload.voice);
+  applyWakeStatus(payload.wake);
+  setSubtitle(payload.last_subtitle || "Always-listening is on. Say ULTRON or Hey ULTRON.");
+  setVisualState("waiting_for_wake_word");
+  if (!SpeechRecognition) {
+    voiceBadge.textContent = "Wake mock available";
+    return;
+  }
+  micEnabled = true;
+  startRecognition();
+}
+
+async function stopAlwaysListening() {
+  alwaysListening = false;
+  const payload = await postJson("/api/wake/stop", {});
+  applyVoiceStatus(payload.voice);
+  applyWakeStatus(payload.wake);
+  setSubtitle(payload.last_subtitle || "Always-listening is off.");
+  setVisualState("idle");
+  if (recognition && recognitionActive) {
+    recognition.stop();
   }
 }
 
@@ -283,6 +341,9 @@ async function testVoiceProviders() {
 }
 
 async function startVoiceInput() {
+  if (alwaysListening) {
+    await stopAlwaysListening();
+  }
   micEnabled = true;
   micToggle.textContent = "Mic Off";
   voiceBadge.textContent = SpeechRecognition ? "Listening" : "Speech API unavailable";
@@ -340,7 +401,7 @@ function setupSpeechRecognition() {
 
 function startRecognition() {
   if (!recognition || recognitionActive) return;
-  recognition.continuous = !pushToTalk;
+  recognition.continuous = alwaysListening || !pushToTalk;
   try {
     recognition.start();
   } catch {
@@ -350,6 +411,10 @@ function startRecognition() {
 
 async function handleVoiceTranscript(transcript) {
   if (!transcript.trim()) return;
+  if (alwaysListening) {
+    await handleWakeTranscript(transcript);
+    return;
+  }
   setSubtitle(`You: ${transcript}`);
   setVisualState("thinking");
   voiceBadge.textContent = "Processing voice";
@@ -370,6 +435,37 @@ async function handleVoiceTranscript(transcript) {
   } catch {
     setSubtitle("Voice mode could not reach the ULTRON runtime.");
     setVisualState("idle");
+  }
+}
+
+async function handleWakeTranscript(transcript) {
+  setSubtitle(`Heard: ${transcript}`);
+  setVisualState("transcribing");
+  voiceBadge.textContent = "Checking wake gate";
+  try {
+    const payload = await postJson("/api/wake/process", { transcript, audio_energy: transcript.trim() ? 0.8 : 0.0 });
+    applyVoiceStatus(payload.voice);
+    applyWakeStatus(payload.wake);
+    renderHistory(payload.history || []);
+    if (payload.status === "ignored") {
+      setSubtitle(payload.message || "Input ignored by wake/VAD gate.");
+      setVisualState(payload.visual_state || "waiting_for_wake_word");
+      return;
+    }
+    if (payload.status === "wake_detected") {
+      setSubtitle(payload.message || "Wake word detected. Listening.");
+      setVisualState("listening");
+      return;
+    }
+    const response = payload.spoken_response || payload.subtitle || payload.message || "Voice command processed.";
+    setSubtitle(payload.subtitle || `You: ${transcript}\nULTRON: ${response}`);
+    confirmVoiceButton.hidden = !payload.needs_confirmation;
+    setVisualState(payload.needs_confirmation ? "listening" : "speaking");
+    await speakText(response);
+    scheduleListeningReturn();
+  } catch {
+    setSubtitle("Wake mode could not reach the ULTRON runtime.");
+    setVisualState("waiting_for_wake_word");
   }
 }
 
@@ -420,14 +516,14 @@ function stopBrowserSpeech() {
 
 function scheduleListeningReturn() {
   window.clearTimeout(returnTimer);
-  returnTimer = window.setTimeout(() => setVisualState(micEnabled ? "listening" : "idle"), 3200);
+  returnTimer = window.setTimeout(() => setVisualState(alwaysListening ? "waiting_for_wake_word" : micEnabled ? "listening" : "idle"), 3200);
 }
 
 function setVisualState(state, options = {}) {
   if (!stateTargets[state]) state = "idle";
   visualState = state;
   document.body.className = `state-${state}`;
-  statusLabel.textContent = state.charAt(0).toUpperCase() + state.slice(1);
+  statusLabel.textContent = displayState(state);
   stateButtons.forEach((button) => button.classList.toggle("is-active", button.dataset.state === state));
   if (options.sync !== false) {
     fetch("/api/state", {
@@ -454,6 +550,8 @@ function applyVoiceStatus(status) {
   voiceMuted = Boolean(status.muted);
   pushToTalk = Boolean(status.push_to_talk);
   micToggle.textContent = micEnabled ? "Mic Off" : "Mic On";
+  micStatusLabel.textContent = micEnabled ? "On" : "Off";
+  micPrivacyDetail.textContent = alwaysListening ? "Always-listening enabled" : "Push-to-talk available";
   muteToggle.textContent = voiceMuted ? "Muted" : "Mute Off";
   muteToggle.setAttribute("aria-pressed", String(voiceMuted));
   pushToTalkToggle.textContent = pushToTalk ? "Push-to-talk" : "Continuous";
@@ -467,6 +565,30 @@ function applyVoiceStatus(status) {
   if (!providerStatus) {
     sttProviderLabel.textContent = status.stt_provider || "text_payload";
     ttsProviderLabel.textContent = status.tts_provider || "browser_speech_synthesis";
+  }
+}
+
+function applyWakeStatus(wake) {
+  if (!wake) return;
+  alwaysListening = Boolean(wake.always_listening);
+  alwaysListeningToggle.textContent = alwaysListening ? "Always On" : "Always Off";
+  alwaysListeningToggle.setAttribute("aria-pressed", String(alwaysListening));
+  micStatusLabel.textContent = alwaysListening || micEnabled ? "On" : "Off";
+  micPrivacyDetail.textContent = alwaysListening ? "Always-listening enabled" : "Push-to-talk available";
+  wakeStateLabel.textContent = displayState(wake.mode || "inactive");
+  wakeDetail.textContent = wake.last_event || `Wake phrases: ${(wake.wake_phrases || ["ULTRON", "Hey ULTRON"]).join(", ")}`;
+  if (wake.noisy_ignored) {
+    vadStateLabel.textContent = "Ignored";
+    vadDetail.textContent = wake.last_event || "Noisy or empty input ignored";
+  } else if (wake.voice_detected) {
+    vadStateLabel.textContent = "Voice detected";
+    vadDetail.textContent = wake.wake_word_detected ? `Wake: ${wake.last_wake_phrase || "detected"}` : "Waiting for wake phrase";
+  } else {
+    vadStateLabel.textContent = "Idle";
+    vadDetail.textContent = alwaysListening ? "Monitoring for speech gate events" : "Always-listening disabled";
+  }
+  if (alwaysListening && (visualState === "idle" || visualState === "inactive")) {
+    setVisualState(wake.mode || "waiting_for_wake_word", { sync: false });
   }
 }
 
@@ -489,6 +611,12 @@ function providerDetail(configured, active, health) {
   if (!health) return fallback;
   const state = health.available ? fallback : `Unavailable: ${health.detail}`;
   return health.fallback_to ? `${state}; using ${health.fallback_to}` : state;
+}
+
+function displayState(state) {
+  return String(state || "idle")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 function renderHistory(items) {

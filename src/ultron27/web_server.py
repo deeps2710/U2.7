@@ -74,6 +74,42 @@ class WebState:
         self.visual_state = "speaking" if not self.voice.status.muted else "idle"
         return self.snapshot({**voice_payload, "subtitle": self.last_subtitle})
 
+    def wake_start(self) -> dict[str, Any]:
+        self.visual_state = "waiting_for_wake_word"
+        payload = self.voice.start_wake()
+        self.last_subtitle = "Always-listening is on. Say ULTRON or Hey ULTRON."
+        return self.snapshot(payload)
+
+    def wake_stop(self) -> dict[str, Any]:
+        payload = self.voice.stop_wake()
+        self.visual_state = "idle"
+        self.last_subtitle = "Always-listening is off."
+        return self.snapshot(payload)
+
+    def wake_status(self) -> dict[str, Any]:
+        return self.snapshot(self.voice.wake_snapshot())
+
+    def wake_process(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.visual_state = "transcribing"
+        wake_payload = self.voice.process_wake_input(payload, lambda goal, confirmed=False: self.command(goal, confirmed=confirmed))
+        status = wake_payload.get("status")
+        if status in {"ignored", "inactive"}:
+            self.last_subtitle = str(wake_payload.get("message", "Input ignored by wake/VAD gate."))
+            self.visual_state = "waiting_for_wake_word" if self.voice.wake_status.always_listening else "idle"
+            return self.snapshot(wake_payload)
+        if status == "wake_detected":
+            self.last_subtitle = str(wake_payload.get("message", "Wake word detected. Listening."))
+            self.visual_state = "listening"
+            return self.snapshot(wake_payload)
+        if wake_payload.get("command_executed"):
+            user_line = wake_payload.get("record", {}).get("user_said", "")
+            spoken = str(wake_payload.get("spoken_response", self.last_subtitle))
+            self.last_subtitle = f"You: {user_line}\nULTRON: {spoken}"
+            self.visual_state = "speaking" if not self.voice.status.muted else "waiting_for_wake_word"
+            return self.snapshot({**wake_payload, "subtitle": self.last_subtitle})
+        self.visual_state = "waiting_for_wake_word"
+        return self.snapshot(wake_payload)
+
     def voice_status(self) -> dict[str, Any]:
         return self.snapshot({"status": "ok", **self.voice.snapshot()})
 
@@ -104,7 +140,7 @@ class WebState:
         return self.snapshot({"status": "ok", "subtitles_enabled": self.subtitles_enabled})
 
     def set_visual_state(self, state: str) -> dict[str, Any]:
-        if state not in {"idle", "listening", "thinking", "speaking"}:
+        if state not in {"idle", "inactive", "waiting_for_wake_word", "listening", "transcribing", "thinking", "speaking"}:
             return self.snapshot({"status": "error", "message": f"Unknown state: {state}"})
         self.visual_state = state
         return self.snapshot({"status": "ok", "visual_state": self.visual_state})
@@ -144,7 +180,7 @@ def build_state(args: argparse.Namespace) -> WebState:
 
 def make_handler(state: WebState, web_root: Path = WEB_ROOT) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
-        server_version = "UltronPhase9/1.0"
+        server_version = "UltronPhase10/1.0"
 
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
@@ -159,6 +195,9 @@ def make_handler(state: WebState, web_root: Path = WEB_ROOT) -> type[BaseHTTPReq
                 return
             if parsed.path == "/api/voice/providers":
                 self._json(state.voice_providers())
+                return
+            if parsed.path == "/api/wake/status":
+                self._json(state.wake_status())
                 return
             self._serve_static(parsed.path)
 
@@ -183,6 +222,15 @@ def make_handler(state: WebState, web_root: Path = WEB_ROOT) -> type[BaseHTTPReq
                 return
             if parsed.path == "/api/voice/test-tts":
                 self._json(state.voice_test_tts(body))
+                return
+            if parsed.path == "/api/wake/start":
+                self._json(state.wake_start())
+                return
+            if parsed.path == "/api/wake/stop":
+                self._json(state.wake_stop())
+                return
+            if parsed.path == "/api/wake/process":
+                self._json(state.wake_process(body))
                 return
             if parsed.path == "/api/speak":
                 self._json(state.speak(body))

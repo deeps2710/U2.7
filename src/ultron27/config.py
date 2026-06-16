@@ -40,6 +40,11 @@ class UltronConfig:
     voice_rate: float = 0.92
     voice_pitch: float = 0.72
     voice_volume: float = 0.95
+    wake_word_provider: str = "text"
+    wake_phrases: tuple[str, ...] = ("ultron", "hey ultron")
+    wake_model_path: Path | None = None
+    vad_provider: str = "energy"
+    vad_energy_threshold: float = 0.015
 
 
 def load_config(
@@ -135,6 +140,16 @@ def _merge_json_config(config: UltronConfig, path: Path) -> UltronConfig:
         updates["voice_pitch"] = _expect_number(raw, "voice_pitch")
     if "voice_volume" in raw:
         updates["voice_volume"] = _expect_number(raw, "voice_volume")
+    if "wake_word_provider" in raw:
+        updates["wake_word_provider"] = _expect_choice(raw, "wake_word_provider", {"text", "openwakeword", "mock"})
+    if "wake_phrases" in raw:
+        updates["wake_phrases"] = tuple(_expect_string_list(raw, "wake_phrases"))
+    if "wake_model_path" in raw:
+        updates["wake_model_path"] = _resolve_optional_path(raw, "wake_model_path", base)
+    if "vad_provider" in raw:
+        updates["vad_provider"] = _expect_choice(raw, "vad_provider", {"energy", "silero", "webrtc", "mock"})
+    if "vad_energy_threshold" in raw:
+        updates["vad_energy_threshold"] = _expect_number(raw, "vad_energy_threshold")
     return replace(config, **updates)
 
 
@@ -190,6 +205,16 @@ def _merge_env_config(config: UltronConfig, env: Mapping[str, str], base_dir: Pa
         updates["voice_pitch"] = float(env["ULTRON_VOICE_PITCH"])
     if "ULTRON_VOICE_VOLUME" in env:
         updates["voice_volume"] = float(env["ULTRON_VOICE_VOLUME"])
+    if "ULTRON_WAKE_WORD_PROVIDER" in env:
+        updates["wake_word_provider"] = _parse_choice(env["ULTRON_WAKE_WORD_PROVIDER"], "ULTRON_WAKE_WORD_PROVIDER", {"text", "openwakeword", "mock"})
+    if "ULTRON_WAKE_PHRASES" in env:
+        updates["wake_phrases"] = tuple(item.strip() for item in env["ULTRON_WAKE_PHRASES"].split(";") if item.strip())
+    if "ULTRON_WAKE_MODEL_PATH" in env:
+        updates["wake_model_path"] = _resolve_path(Path(env["ULTRON_WAKE_MODEL_PATH"]), base_dir)
+    if "ULTRON_VAD_PROVIDER" in env:
+        updates["vad_provider"] = _parse_choice(env["ULTRON_VAD_PROVIDER"], "ULTRON_VAD_PROVIDER", {"energy", "silero", "webrtc", "mock"})
+    if "ULTRON_VAD_ENERGY_THRESHOLD" in env:
+        updates["vad_energy_threshold"] = float(env["ULTRON_VAD_ENERGY_THRESHOLD"])
     return replace(config, **updates)
 
 

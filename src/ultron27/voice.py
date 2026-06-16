@@ -11,6 +11,20 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from .wake import (
+    DEFAULT_WAKE_PHRASES,
+    EnergyVADProvider,
+    TextWakeWordProvider,
+    VADProvider,
+    WakeGateConfig,
+    WakeStatus,
+    WakeWordProvider,
+    build_vad_provider,
+    build_wake_provider,
+    gate_providers_status,
+    strip_wake_phrase,
+)
+
 
 CONFIRMATION_PHRASES = {"yes confirm", "confirm", "confirmed", "yes proceed", "proceed"}
 
@@ -363,14 +377,24 @@ class VoiceSession:
         *,
         configured_stt: STTProvider | None = None,
         configured_tts: TTSProvider | None = None,
+        wake: WakeWordProvider | None = None,
+        vad: VADProvider | None = None,
+        configured_wake: WakeWordProvider | None = None,
+        configured_vad: VADProvider | None = None,
         provider_config: VoiceProviderConfig | None = None,
+        wake_config: WakeGateConfig | None = None,
         history_limit: int = 20,
     ):
         self.provider_config = provider_config or VoiceProviderConfig()
+        self.wake_config = wake_config or WakeGateConfig()
         self.stt = stt or TextPayloadSTT()
         self.tts = tts or BrowserSpeechTTS()
+        self.wake = wake or TextWakeWordProvider(self.wake_config.wake_phrases)
+        self.vad = vad or EnergyVADProvider(self.wake_config.vad_energy_threshold)
         self.configured_stt = configured_stt or self.stt
         self.configured_tts = configured_tts or self.tts
+        self.configured_wake = configured_wake or self.wake
+        self.configured_vad = configured_vad or self.vad
         self.status = VoiceStatus(
             stt_provider=self.stt.name,
             tts_provider=self.tts.name,
@@ -380,6 +404,11 @@ class VoiceSession:
             voice_rate=self.provider_config.rate,
             voice_pitch=self.provider_config.pitch,
             voice_volume=self.provider_config.volume,
+        )
+        self.wake_status = WakeStatus(
+            wake_provider=self.wake.name,
+            vad_provider=self.vad.name,
+            wake_phrases=self.wake_config.wake_phrases or DEFAULT_WAKE_PHRASES,
         )
         self.history: list[TranscriptRecord] = []
         self.history_limit = history_limit
@@ -395,6 +424,8 @@ class VoiceSession:
     def stop(self) -> dict[str, Any]:
         self.status.microphone_enabled = False
         self.status.listening = False
+        if self.wake_status.always_listening:
+            self.stop_wake()
         return self.snapshot({"status": "ok"})
 
     def set_muted(self, muted: bool) -> dict[str, Any]:
@@ -405,6 +436,7 @@ class VoiceSession:
 
     def transcribe_and_run(self, payload: dict[str, Any], command_runner) -> dict[str, Any]:
         self.status.listening = False
+        self.wake_status.mode = "transcribing" if self.wake_status.always_listening else self.wake_status.mode
         result = self.stt.transcribe(payload)
         if result.empty:
             self.status.last_error = "No speech was detected."
@@ -438,6 +470,8 @@ class VoiceSession:
         )
         self._remember(record)
         self.status.speaking = not self.status.muted
+        if self.wake_status.always_listening:
+            self.wake_status.mode = "speaking" if self.status.speaking else "waiting_for_wake_word"
         self.status.last_error = None
         return self.snapshot(
             {
@@ -462,7 +496,127 @@ class VoiceSession:
     def stop_speaking(self) -> dict[str, Any]:
         payload = self.tts.stop()
         self.status.speaking = False
+        if self.wake_status.always_listening:
+            self.wake_status.mode = "waiting_for_wake_word"
         return self.snapshot({"status": "ok", "speech": payload})
+
+    def start_wake(self) -> dict[str, Any]:
+        self.wake_status.always_listening = True
+        self.wake_status.mode = "waiting_for_wake_word"
+        self.wake_status.wake_word_detected = False
+        self.wake_status.voice_detected = False
+        self.wake_status.noisy_ignored = False
+        self.wake_status.last_wake_phrase = None
+        self.wake_status.last_event = "Always-listening mode is waiting for ULTRON."
+        self.status.microphone_enabled = True
+        self.status.listening = False
+        self.status.push_to_talk = False
+        self.status.last_error = None
+        return self.snapshot({"status": "ok"})
+
+    def stop_wake(self) -> dict[str, Any]:
+        self.wake_status.always_listening = False
+        self.wake_status.mode = "inactive"
+        self.wake_status.wake_word_detected = False
+        self.wake_status.voice_detected = False
+        self.wake_status.noisy_ignored = False
+        self.wake_status.last_event = "Always-listening mode stopped."
+        self.status.microphone_enabled = False
+        self.status.listening = False
+        return self.snapshot({"status": "ok"})
+
+    def wake_snapshot(self) -> dict[str, Any]:
+        return self.snapshot({"status": "ok", **self.gate_status()})
+
+    def process_wake_input(self, payload: dict[str, Any], command_runner) -> dict[str, Any]:
+        if not self.wake_status.always_listening:
+            self.wake_status.mode = "inactive"
+            self.wake_status.last_event = "Always-listening mode is off."
+            return self.snapshot({"status": "inactive", "message": self.wake_status.last_event, **self.gate_status()})
+
+        vad_result = self.vad.detect(payload)
+        self.wake_status.voice_detected = bool(vad_result.speech)
+        self.wake_status.noisy_ignored = bool(vad_result.noisy or not vad_result.speech)
+        if not vad_result.speech:
+            self.wake_status.mode = "waiting_for_wake_word"
+            self.wake_status.wake_word_detected = False
+            self.wake_status.last_wake_phrase = None
+            self.wake_status.last_event = vad_result.reason
+            return self.snapshot(
+                {
+                    "status": "ignored",
+                    "message": vad_result.reason,
+                    "vad": vad_result.to_dict(),
+                    "command_executed": False,
+                    **self.gate_status(),
+                }
+            )
+
+        wake_result = self.wake.detect(payload)
+        raw_text = str(payload.get("transcript") or payload.get("text") or "").strip()
+        if self.wake_status.mode != "listening" and not wake_result.detected:
+            self.wake_status.wake_word_detected = False
+            self.wake_status.last_wake_phrase = None
+            self.wake_status.last_event = "Speech detected, but wake word was not detected."
+            return self.snapshot(
+                {
+                    "status": "ignored",
+                    "message": self.wake_status.last_event,
+                    "wake_detection": wake_result.to_dict(),
+                    "vad": vad_result.to_dict(),
+                    "command_executed": False,
+                    **self.gate_status(),
+                }
+            )
+
+        authorized_text = raw_text
+        if wake_result.detected:
+            self.wake_status.wake_word_detected = True
+            self.wake_status.last_wake_phrase = wake_result.phrase
+            authorized_text = strip_wake_phrase(raw_text, self.wake_status.wake_phrases)
+            if not authorized_text:
+                self.wake_status.mode = "listening"
+                self.wake_status.last_event = "Wake word detected. Listening for a command."
+                self.status.listening = True
+                return self.snapshot(
+                    {
+                        "status": "wake_detected",
+                        "message": self.wake_status.last_event,
+                        "wake_detection": wake_result.to_dict(),
+                        "vad": vad_result.to_dict(),
+                        "command_executed": False,
+                        **self.gate_status(),
+                    }
+                )
+
+        self.wake_status.mode = "thinking"
+        self.wake_status.last_event = "Wake gate authorized a speech segment."
+        command_payload = dict(payload)
+        command_payload["transcript"] = authorized_text
+        command_payload["wake_authorized"] = True
+        voice_payload = self.transcribe_and_run(command_payload, command_runner)
+        if voice_payload.get("status") == "empty":
+            self.wake_status.mode = "listening"
+            self.wake_status.noisy_ignored = True
+            self.wake_status.last_event = str(voice_payload.get("message", "No speech was detected."))
+            return self.snapshot(
+                {
+                    **voice_payload,
+                    "wake_detection": wake_result.to_dict(),
+                    "vad": vad_result.to_dict(),
+                    "command_executed": False,
+                    **self.gate_status(),
+                }
+            )
+        return self.snapshot(
+            {
+                **voice_payload,
+                "wake_detection": wake_result.to_dict(),
+                "vad": vad_result.to_dict(),
+                "command_executed": True,
+                **self.gate_status(),
+            }
+        )
 
     def providers_status(self) -> dict[str, Any]:
         stt_configured = _health(self.configured_stt, kind="stt", configured=True, active=self.configured_stt.name == self.stt.name)
@@ -491,6 +645,12 @@ class VoiceSession:
             },
         }
 
+    def gate_status(self) -> dict[str, Any]:
+        return {
+            "wake": self.wake_status.to_dict(),
+            "gate_providers": gate_providers_status(self.configured_wake, self.wake, self.configured_vad, self.vad),
+        }
+
     def test_stt(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         test_payload = {"transcript": "ULTRON, create note provider test"} if payload is None else payload
         result = self.stt.transcribe(test_payload)
@@ -506,6 +666,7 @@ class VoiceSession:
     def snapshot(self, extra: dict[str, Any] | None = None) -> dict[str, Any]:
         payload = {
             "voice": self.status.to_dict(),
+            "wake": self.wake_status.to_dict(),
             "history": [item.to_dict() for item in self.history],
         }
         if extra:
@@ -520,8 +681,11 @@ class VoiceSession:
 
 def build_voice_session(config: Any | None = None) -> VoiceSession:
     provider_config = VoiceProviderConfig.from_config(config) if config is not None else VoiceProviderConfig()
+    wake_config = WakeGateConfig.from_config(config) if config is not None else WakeGateConfig()
     requested_stt = _create_stt_provider(provider_config)
     requested_tts = _create_tts_provider(provider_config)
+    configured_wake, wake = build_wake_provider(wake_config)
+    configured_vad, vad = build_vad_provider(wake_config)
     stt = requested_stt if _health(requested_stt, kind="stt", configured=True, active=False).available else BrowserTranscriptSTT()
     tts = requested_tts if _health(requested_tts, kind="tts", configured=True, active=False).available else BrowserSpeechTTS()
     return VoiceSession(
@@ -529,7 +693,12 @@ def build_voice_session(config: Any | None = None) -> VoiceSession:
         tts=tts,
         configured_stt=requested_stt,
         configured_tts=requested_tts,
+        wake=wake,
+        vad=vad,
+        configured_wake=configured_wake,
+        configured_vad=configured_vad,
         provider_config=provider_config,
+        wake_config=wake_config,
     )
 
 

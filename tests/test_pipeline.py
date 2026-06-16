@@ -23,7 +23,8 @@ from ultron27.planner import DatasetPlanner, regex_plan
 from ultron27.policy import decide
 from ultron27.runtime import RuntimeSettings, UltronAssistant
 from ultron27.tools import validate_tool_call
-from ultron27.voice import MockSTT, MockTTS, VoiceProviderConfig, VoiceSession, build_voice_session, strip_wake_word
+from ultron27.voice import MockSTT, MockTTS, TextPayloadSTT, VoiceProviderConfig, VoiceSession, build_voice_session, strip_wake_word
+from ultron27.wake import MockVADProvider, MockWakeWordProvider, WakeGateConfig
 from ultron27.web_server import WebState, make_handler
 
 
@@ -849,6 +850,164 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(providers["active"]["tts"], "mock_tts")
         self.assertEqual(stt["transcript"]["text"], "create note api provider")
         self.assertEqual(tts_payload["speech"]["provider"], "mock_tts")
+
+    def test_phase10_wake_word_detected_enters_listening(self) -> None:
+        state = WebState(UltronBrain(UltronAssistant(_test_settings())))
+
+        state.wake_start()
+        payload = state.wake_process({"transcript": "ULTRON", "audio_energy": 0.8})
+
+        self.assertEqual(payload["status"], "wake_detected")
+        self.assertEqual(payload["wake"]["mode"], "listening")
+        self.assertEqual(payload["visual_state"], "listening")
+        self.assertIsNone(payload["last_task"])
+
+    def test_phase10_config_accepts_wake_and_vad_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "ultron.config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "wake_word_provider": "openwakeword",
+                        "wake_phrases": ["ULTRON", "Hey ULTRON"],
+                        "wake_model_path": "models/wake.onnx",
+                        "vad_provider": "silero",
+                        "vad_energy_threshold": 0.025,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(
+                config_path,
+                environ={"ULTRON_WAKE_WORD_PROVIDER": "text", "ULTRON_VAD_PROVIDER": "energy"},
+                base_dir=root,
+            )
+
+            self.assertEqual(config.wake_word_provider, "text")
+            self.assertEqual(config.wake_phrases, ("ULTRON", "Hey ULTRON"))
+            self.assertEqual(config.wake_model_path, root / "models" / "wake.onnx")
+            self.assertEqual(config.vad_provider, "energy")
+            self.assertEqual(config.vad_energy_threshold, 0.025)
+
+    def test_phase10_no_wake_word_does_not_execute(self) -> None:
+        state = WebState(UltronBrain(UltronAssistant(_test_settings())))
+
+        state.wake_start()
+        payload = state.wake_process({"transcript": "create note ignored background speech", "audio_energy": 0.8})
+
+        self.assertEqual(payload["status"], "ignored")
+        self.assertFalse(payload["command_executed"])
+        self.assertEqual(payload["wake"]["mode"], "waiting_for_wake_word")
+        self.assertIsNone(payload["last_task"])
+        self.assertEqual(payload["history"], [])
+
+    def test_phase10_noisy_audio_is_ignored(self) -> None:
+        state = WebState(UltronBrain(UltronAssistant(_test_settings())))
+
+        state.wake_start()
+        payload = state.wake_process({"transcript": "   ", "audio_energy": 0.0})
+
+        self.assertEqual(payload["status"], "ignored")
+        self.assertTrue(payload["wake"]["noisy_ignored"])
+        self.assertFalse(payload["command_executed"])
+        self.assertIsNone(payload["last_task"])
+
+    def test_phase10_vad_speech_segment_calls_stt_after_wake(self) -> None:
+        class CountingSTT(TextPayloadSTT):
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def transcribe(self, payload: dict) -> object:
+                self.calls += 1
+                return super().transcribe(payload)
+
+        stt = CountingSTT()
+        state = WebState(
+            UltronBrain(UltronAssistant(_test_settings())),
+            voice=VoiceSession(
+                stt=stt,
+                wake=MockWakeWordProvider(),
+                vad=MockVADProvider(speech=True),
+                configured_wake=MockWakeWordProvider(),
+                configured_vad=MockVADProvider(speech=True),
+                wake_config=WakeGateConfig(wake_word_provider="mock", vad_provider="mock"),
+            ),
+        )
+
+        state.wake_start()
+        payload = state.wake_process({"transcript": "ULTRON, create note wake test", "audio_energy": 0.9})
+
+        self.assertEqual(stt.calls, 1)
+        self.assertTrue(payload["command_executed"])
+        self.assertEqual(payload["task"]["steps"][0]["tool_call"]["name"], "create_note")
+
+    def test_phase10_wake_voice_safety_behavior_is_unchanged(self) -> None:
+        state = WebState(UltronBrain(UltronAssistant(_test_settings())))
+
+        state.wake_start()
+        payload = state.wake_process({"transcript": "Hey ULTRON, delete project_report.txt", "audio_energy": 0.8})
+
+        self.assertTrue(payload["needs_confirmation"])
+        self.assertEqual(payload["task"]["status"], "waiting_for_confirmation")
+        self.assertEqual(payload["voice"]["pending_confirmation_goal"], "delete project_report.txt")
+
+    def test_phase10_wake_api_endpoints(self) -> None:
+        state = WebState(UltronBrain(UltronAssistant(_test_settings())))
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(state))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            started = json.loads(
+                urlopen(
+                    Request(
+                        base + "/api/wake/start",
+                        data=json.dumps({}).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    ),
+                    timeout=5,
+                )
+                .read()
+                .decode("utf-8")
+            )
+            status = json.loads(urlopen(base + "/api/wake/status", timeout=5).read().decode("utf-8"))
+            ignored = json.loads(
+                urlopen(
+                    Request(
+                        base + "/api/wake/process",
+                        data=json.dumps({"transcript": "background speech", "audio_energy": 0.8}).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    ),
+                    timeout=5,
+                )
+                .read()
+                .decode("utf-8")
+            )
+            stopped = json.loads(
+                urlopen(
+                    Request(
+                        base + "/api/wake/stop",
+                        data=json.dumps({}).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    ),
+                    timeout=5,
+                )
+                .read()
+                .decode("utf-8")
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        self.assertEqual(started["wake"]["mode"], "waiting_for_wake_word")
+        self.assertTrue(status["wake"]["always_listening"])
+        self.assertEqual(ignored["status"], "ignored")
+        self.assertEqual(stopped["wake"]["mode"], "inactive")
 
     def test_phase8_wake_word_is_removed_from_transcript(self) -> None:
         self.assertEqual(strip_wake_word("ULTRON, create note demo"), "create note demo")

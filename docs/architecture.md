@@ -64,6 +64,15 @@ browser/local audio -> configured STT provider -> brain/runtime
 
 Local voice providers are runtime adapters only. They can transcribe audio or synthesize speech, but they cannot execute tools, skip validation, change policy decisions, or access shell execution authority.
 
+Phase 10 adds wake-word and VAD gates ahead of STT:
+
+```text
+candidate audio/text -> wake-word provider -> VAD provider -> STT
+-> brain/runtime -> typed tool call -> validation -> policy -> executor
+```
+
+Wake word and VAD providers are input gates only. They can allow, delay, or ignore a speech segment, but they cannot create tasks or run tools.
+
 ## Core Principles
 
 - Local-first by default.
@@ -79,6 +88,7 @@ Local voice providers are runtime adapters only. They can transcribe audio or sy
 - Persistent memory rejects obvious sensitive content such as passwords, API keys, tokens, credentials, and secrets.
 - Voice mode requires explicit confirmation phrases for high-risk actions.
 - Voice providers must fail closed into typed/browser fallback rather than crashing or bypassing the runtime.
+- Wake/VAD providers must ignore random background speech, empty input, and noisy segments before STT or the brain sees them.
 
 ## Risk Levels
 
@@ -190,6 +200,43 @@ Provider health endpoints:
 | `POST /api/voice/test-tts` | Test the active TTS provider without changing tool state. |
 
 Missing local models, missing Python packages, or missing Piper binaries are reported through health checks and do not crash the web server. The frontend displays active STT/TTS providers so the user can see whether ULTRON is local, browser-backed, or mocked.
+
+## Phase 10 Wake Word and VAD Boundary
+
+Phase 10 adds `src/ultron27/wake.py` and extends `VoiceSession` with a wake gate. The always-listening state machine is:
+
+```text
+inactive -> waiting_for_wake_word -> listening -> transcribing
+-> thinking -> speaking
+```
+
+Supported wake providers:
+
+| Provider | Purpose | Fallback |
+|---|---|---|
+| `text_wake_word` | Detect `ULTRON` and `Hey ULTRON` in transcript payloads. | none |
+| `openwakeword` | Health-checked adapter for future local wake-word audio models. | text wake-word detection |
+| `mock_wake_word` | Deterministic tests. | none |
+
+Supported VAD providers:
+
+| Provider | Purpose | Fallback |
+|---|---|---|
+| `energy_threshold` | Ignore empty, noisy, or low-energy segments. | none |
+| `silero_vad` | Health-checked adapter for future Silero VAD use. | energy threshold |
+| `webrtc_vad` | Health-checked adapter for future WebRTC VAD use. | energy threshold |
+| `mock_vad` | Deterministic tests. | none |
+
+Wake API endpoints:
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/wake/start` | Enable always-listening mode and enter `waiting_for_wake_word`. |
+| `POST /api/wake/stop` | Disable always-listening mode and return to `inactive`. |
+| `GET /api/wake/status` | Return wake/VAD state and provider health. |
+| `POST /api/wake/process` | Browser adapter route for candidate speech segments. |
+
+`POST /api/wake/process` only calls STT and the brain after both gates pass. While the session is `waiting_for_wake_word`, speech without `ULTRON` or `Hey ULTRON` is ignored. Empty/noisy input is ignored before wake detection. Push-to-talk remains available through the Phase 8 `/api/voice/transcribe` route.
 
 ## Dataset Role
 

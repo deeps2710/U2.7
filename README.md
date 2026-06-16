@@ -22,6 +22,7 @@ The repo is built around the supplied research paper and synthetic laptop-comman
 - Cyberpunk green plasma-sphere web interface backed by the local brain/runtime API.
 - Voice mode with browser speech recognition, speech synthesis, transcript history, mute, push-to-talk, and confirmation controls.
 - Offline-first voice provider layer with faster-whisper, whisper.cpp, Piper, and pyttsx3 adapters plus browser/mock fallbacks.
+- Wake-word and voice activity gates for always-listening mode, with push-to-talk still available.
 - Pytest test suite for planner, validation, policy, and execution behavior.
 
 ## Project Layout
@@ -54,6 +55,7 @@ python -m ultron27 "/do Create a note called project ideas and add that I should
 python scripts/run_phase7_ui.py --port 8765
 python scripts/run_phase8_voice_ui.py --port 8765
 python scripts/run_phase9_voice_ui.py --port 8765
+python scripts/run_phase10_wake_ui.py --port 8765
 python -m unittest discover -s tests
 ```
 
@@ -97,7 +99,12 @@ ULTRON looks for `ultron.config.json` first, then `.ultron/config.json`. You can
   "voice_identity": "ULTRON",
   "voice_rate": 0.92,
   "voice_pitch": 0.72,
-  "voice_volume": 0.95
+  "voice_volume": 0.95,
+  "wake_word_provider": "text",
+  "wake_phrases": ["ULTRON", "Hey ULTRON"],
+  "wake_model_path": null,
+  "vad_provider": "energy",
+  "vad_energy_threshold": 0.015
 }
 ```
 
@@ -117,6 +124,10 @@ $env:ULTRON_TTS_MODEL_PATH = ".ultron/models/piper.onnx"
 $env:ULTRON_TTS_VOICE_PATH = ".ultron/models/piper.json"
 $env:ULTRON_VOICE_DEVICE = "cpu"
 $env:ULTRON_VOICE_IDENTITY = "ULTRON"
+$env:ULTRON_WAKE_WORD_PROVIDER = "text"
+$env:ULTRON_WAKE_PHRASES = "ULTRON;Hey ULTRON"
+$env:ULTRON_VAD_PROVIDER = "energy"
+$env:ULTRON_VAD_ENERGY_THRESHOLD = "0.015"
 ```
 
 Useful CLI flags:
@@ -130,7 +141,7 @@ ultron "/do create a note called ideas and add that voice mode is next" --text -
 ultron "/memory" --text
 ultron "/forget last_note" --text
 ultron-ui --port 8765
-python scripts/run_phase9_voice_ui.py --port 8765
+python scripts/run_phase10_wake_ui.py --port 8765
 ultron "create note standup" --workspace .
 ultron "open notepad" --execute
 ultron "delete project_report.txt" --yes
@@ -364,6 +375,42 @@ POST /api/voice/test-tts
 
 If a local STT model, TTS model, Python package, or Piper executable is missing, ULTRON reports the issue and falls back to browser transcript/speech behavior. Typed commands, subtitles, and the safe runtime continue to work.
 
+## Phase 10 Wake Word and VAD
+
+Phase 10 adds an input gate before speech reaches STT and the brain. Wake word detection and VAD only decide whether a speech segment should be considered; they never execute tools directly.
+
+Run it with:
+
+```powershell
+python scripts/run_phase10_wake_ui.py --port 8765
+```
+
+Always-listening states:
+
+```text
+inactive -> waiting_for_wake_word -> listening -> transcribing
+-> thinking -> speaking
+```
+
+Wake/VAD providers:
+
+- `wake_word_provider`: `text`, `openwakeword`, or `mock`.
+- `wake_phrases`: defaults to `ULTRON` and `Hey ULTRON`.
+- `wake_model_path`: optional openWakeWord model path.
+- `vad_provider`: `energy`, `silero`, `webrtc`, or `mock`.
+- `vad_energy_threshold`: fallback energy threshold for noisy/empty input.
+
+Wake API endpoints:
+
+```text
+POST /api/wake/start
+POST /api/wake/stop
+GET  /api/wake/status
+POST /api/wake/process
+```
+
+`/api/wake/process` is the browser adapter route for candidate speech segments. It ignores empty/noisy audio and speech without `ULTRON` or `Hey ULTRON` while the session is waiting for the wake word. Push-to-talk still uses `/api/voice/transcribe`.
+
 ## Example
 
 ```powershell
@@ -406,7 +453,7 @@ High-risk operations such as deleting files, sending email, running scripts, res
 ## Roadmap
 
 1. Install and tune real faster-whisper/whisper.cpp and Piper models for the target laptop.
-2. Add wake-word and stronger VAD using openWakeWord and Silero VAD.
+2. Install real openWakeWord and Silero/WebRTC VAD dependencies for microphone audio.
 3. Add streaming partial transcripts and lower-latency speech playback.
 4. Grow the dataset with real corrected transcripts and Hinglish/Hindi variants.
 5. Add richer OS-specific executor plugins for Windows, macOS, and Linux.

@@ -30,5 +30,13 @@
   "voice_identity": "ULTRON",
   "voice_rate": 0.92,
   "voice_pitch": 0.72,
-  "voice_volume": 0.95
+  "voice_volume": 0.95,
+  "wake_word_provider": "text",
+  "wake_phrases": [
+    "ULTRON",
+    "Hey ULTRON"
+  ],
+  "wake_model_path": null,
+  "vad_provider": "energy",
+  "vad_energy_threshold": 0.015
 }

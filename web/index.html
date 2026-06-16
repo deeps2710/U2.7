@@ -38,6 +38,7 @@
 
       <section class="voice-console" aria-label="Voice controls">
         <button id="micToggle" type="button">Mic On</button>
+        <button id="alwaysListeningToggle" type="button" aria-pressed="false">Always Off</button>
         <button id="pushToTalkToggle" type="button" aria-pressed="true">Push-to-talk</button>
         <button id="muteToggle" type="button" aria-pressed="false">Mute Off</button>
         <button id="stopSpeakingButton" type="button">Stop Voice</button>
@@ -58,6 +59,24 @@
         </div>
         <button id="refreshProvidersButton" type="button">Refresh</button>
         <button id="testProvidersButton" type="button">Test Voice</button>
+      </section>
+
+      <section class="wake-panel" aria-label="Wake word and voice activity status">
+        <div>
+          <span>Microphone</span>
+          <strong id="micStatusLabel">Off</strong>
+          <small id="micPrivacyDetail">Push-to-talk available</small>
+        </div>
+        <div>
+          <span>Wake gate</span>
+          <strong id="wakeStateLabel">Inactive</strong>
+          <small id="wakeDetail">Say ULTRON or Hey ULTRON</small>
+        </div>
+        <div>
+          <span>Voice activity</span>
+          <strong id="vadStateLabel">Idle</strong>
+          <small id="vadDetail">No speech segment yet</small>
+        </div>
       </section>
 
       <section class="command-row" aria-label="Command input">
