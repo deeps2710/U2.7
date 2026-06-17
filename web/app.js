@@ -1,4 +1,5 @@
 import * as THREE from "./vendor/three.module.min.js";
+import { createArmillaryCore } from "./ultron-core.js";
 
 const canvas = document.getElementById("ultron-scene");
 const subtitlePanel = document.getElementById("subtitlePanel");
@@ -9,6 +10,7 @@ const sendButton = document.getElementById("sendButton");
 const statusLabel = document.getElementById("statusLabel");
 const voiceBadge = document.getElementById("voiceBadge");
 const micToggle = document.getElementById("micToggle");
+const backendCaptureButton = document.getElementById("backendCaptureButton");
 const alwaysListeningToggle = document.getElementById("alwaysListeningToggle");
 const pushToTalkToggle = document.getElementById("pushToTalkToggle");
 const muteToggle = document.getElementById("muteToggle");
@@ -17,6 +19,8 @@ const confirmVoiceButton = document.getElementById("confirmVoiceButton");
 const mockVoiceButton = document.getElementById("mockVoiceButton");
 const sttProviderLabel = document.getElementById("sttProviderLabel");
 const sttProviderDetail = document.getElementById("sttProviderDetail");
+const captureProviderLabel = document.getElementById("captureProviderLabel");
+const captureProviderDetail = document.getElementById("captureProviderDetail");
 const ttsProviderLabel = document.getElementById("ttsProviderLabel");
 const ttsProviderDetail = document.getElementById("ttsProviderDetail");
 const refreshProvidersButton = document.getElementById("refreshProvidersButton");
@@ -27,8 +31,27 @@ const wakeStateLabel = document.getElementById("wakeStateLabel");
 const wakeDetail = document.getElementById("wakeDetail");
 const vadStateLabel = document.getElementById("vadStateLabel");
 const vadDetail = document.getElementById("vadDetail");
+const lastTranscriptLabel = document.getElementById("lastTranscriptLabel");
+const confidenceDetail = document.getElementById("confidenceDetail");
+const audioStateLabel = document.getElementById("audioStateLabel");
+const audioDetail = document.getElementById("audioDetail");
 const voiceHistory = document.getElementById("voiceHistory");
+const skillsList = document.getElementById("skillsList");
+const memoryToggle = document.getElementById("memoryToggle");
+const memoryForgetInput = document.getElementById("memoryForgetInput");
+const memoryForgetButton = document.getElementById("memoryForgetButton");
+const knowledgeSearchInput = document.getElementById("knowledgeSearchInput");
+const knowledgeSearchButton = document.getElementById("knowledgeSearchButton");
+const knowledgeList = document.getElementById("knowledgeList");
+const recentTasksList = document.getElementById("recentTasksList");
 const stateButtons = [...document.querySelectorAll("[data-state]")];
+const confirmationModal = document.getElementById("confirmationModal");
+const confirmationTitle = document.getElementById("confirmationTitle");
+const confirmationMessage = document.getElementById("confirmationMessage");
+const confirmationTool = document.getElementById("confirmationTool");
+const confirmationPermission = document.getElementById("confirmationPermission");
+const approveConfirmationButton = document.getElementById("approveConfirmationButton");
+const cancelConfirmationButton = document.getElementById("cancelConfirmationButton");
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(44, window.innerWidth / window.innerHeight, 0.1, 100);
@@ -53,13 +76,15 @@ const stateTargets = {
 let visualState = "idle";
 let subtitlesEnabled = true;
 let micEnabled = false;
-let pushToTalk = true;
+let pushToTalk = false;
 let voiceMuted = false;
 let returnTimer = null;
 let recognition = null;
 let recognitionActive = false;
 let providerStatus = null;
 let alwaysListening = false;
+let pendingConfirmation = null;
+let memoryEnabled = true;
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
@@ -153,6 +178,11 @@ const fill = new THREE.PointLight(0x00ff66, 1.4, 7);
 fill.position.set(1.8, 1.2, 2.4);
 scene.add(fill);
 
+root.visible = false;
+particles.visible = false;
+fill.intensity = 0;
+const armillaryCore = createArmillaryCore({ scene, camera, renderer });
+
 setVisualState("idle", { sync: false });
 loadStatus();
 loadProviders();
@@ -184,11 +214,13 @@ micToggle.addEventListener("click", () => {
     startVoiceInput();
   }
 });
+backendCaptureButton.addEventListener("click", captureBackendVoice);
 
 pushToTalkToggle.addEventListener("click", () => {
   pushToTalk = !pushToTalk;
   pushToTalkToggle.textContent = pushToTalk ? "Push-to-talk" : "Continuous";
   pushToTalkToggle.setAttribute("aria-pressed", String(pushToTalk));
+  micPrivacyDetail.textContent = pushToTalk ? "One command per mic start" : "Continuous listening until stopped";
 });
 
 alwaysListeningToggle.addEventListener("click", () => {
@@ -219,6 +251,17 @@ mockVoiceButton.addEventListener("click", () =>
 );
 refreshProvidersButton.addEventListener("click", loadProviders);
 testProvidersButton.addEventListener("click", testVoiceProviders);
+approveConfirmationButton.addEventListener("click", approvePendingConfirmation);
+cancelConfirmationButton.addEventListener("click", cancelPendingConfirmation);
+knowledgeSearchButton.addEventListener("click", searchKnowledge);
+knowledgeSearchInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") searchKnowledge();
+});
+memoryToggle.addEventListener("click", toggleMemory);
+memoryForgetButton.addEventListener("click", forgetMemory);
+memoryForgetInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") forgetMemory();
+});
 
 sendButton.addEventListener("click", sendCommand);
 commandInput.addEventListener("keydown", (event) => {
@@ -233,16 +276,27 @@ window.addEventListener("resize", () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-async function sendCommand() {
-  const command = commandInput.value.trim();
+async function sendCommand(options = {}) {
+  const command = String(options.command ?? commandInput.value).trim();
+  const confirmed = Boolean(options.confirmed);
   if (!command) return;
-  commandInput.value = "";
-  setSubtitle(`Processing: ${command}`);
+  if (!confirmed) commandInput.value = "";
+  setSubtitle(confirmed ? `Confirmed: ${command}` : `Processing: ${command}`);
   setVisualState("thinking");
   try {
-    const payload = await postJson("/api/command", { command, mode: "do" });
+    const payload = await postJson("/api/command", { command, mode: "do", confirmed });
     const spoken = payload.subtitle || buildTaskSubtitle(payload.task) || payload.message || "Command processed.";
     setSubtitle(spoken);
+    renderHistory(payload.conversation_history || []);
+    renderRecentTasks(payload.recent_tasks || []);
+    if (payload.memory_enabled !== undefined) memoryEnabled = Boolean(payload.memory_enabled);
+    await loadMemoryKnowledge();
+    if (taskNeedsConfirmation(payload.task)) {
+      showConfirmation(payload.task, { command, source: "typed" });
+      setVisualState("listening");
+      return;
+    }
+    clearPendingConfirmation();
     setVisualState("speaking");
     await speakText(spoken);
     scheduleListeningReturn();
@@ -262,9 +316,15 @@ async function loadStatus() {
     const voicePayload = await fetchJson("/api/voice/status");
     applyVoiceStatus(voicePayload.voice);
     applyWakeStatus(voicePayload.wake);
+    applyVoiceDiagnostics(voicePayload.voice_diagnostics || payload.voice_diagnostics);
     renderHistory(voicePayload.history || []);
+    renderRecentTasks(payload.recent_tasks || []);
+    memoryEnabled = payload.memory_enabled !== undefined ? Boolean(payload.memory_enabled) : memoryEnabled;
+    renderKnowledgePanel({ sources: payload.knowledge_sources || [], memoryEnabled });
     await loadProviders();
     await loadWakeStatus();
+    await loadSkills();
+    await loadMemoryKnowledge();
   } catch {
     setSubtitle("ULTRON visual shell loaded. Runtime API pending.");
   }
@@ -277,6 +337,7 @@ async function loadProviders() {
   } catch {
     providerStatus = null;
     sttProviderDetail.textContent = "Runtime API pending";
+    captureProviderDetail.textContent = "Runtime API pending";
     ttsProviderDetail.textContent = "Runtime API pending";
   }
 }
@@ -288,6 +349,67 @@ async function loadWakeStatus() {
   } catch {
     wakeStateLabel.textContent = "Pending";
     wakeDetail.textContent = "Wake API pending";
+  }
+}
+
+async function loadSkills() {
+  try {
+    const payload = await fetchJson("/api/skills");
+    renderSkills(payload.skills || []);
+  } catch {
+    renderSkills([]);
+  }
+}
+
+async function loadMemoryKnowledge() {
+  try {
+    const memory = await fetchJson("/api/memory");
+    const status = await fetchJson("/api/status");
+    memoryEnabled = memory.enabled !== undefined ? Boolean(memory.enabled) : memoryEnabled;
+    renderKnowledgePanel({ memory: memory.memory || [], sources: status.knowledge_sources || [], memoryEnabled });
+    renderRecentTasks(status.recent_tasks || []);
+  } catch {
+    renderKnowledgePanel({ memory: [], sources: [], memoryEnabled });
+  }
+}
+
+async function toggleMemory() {
+  memoryEnabled = !memoryEnabled;
+  try {
+    const payload = await postJson("/api/memory/toggle", { enabled: memoryEnabled });
+    memoryEnabled = Boolean(payload.enabled);
+    renderKnowledgePanel({ memory: payload.memory || [], sources: payload.knowledge_sources || [], memoryEnabled });
+    setSubtitle(memoryEnabled ? "Memory is now on." : "Memory is now off.");
+  } catch {
+    setSubtitle("Memory controls could not reach the ULTRON runtime.");
+  }
+}
+
+async function forgetMemory() {
+  const query = memoryForgetInput.value.trim();
+  if (!query) return;
+  try {
+    const payload = await postJson("/api/memory/forget", { query });
+    memoryForgetInput.value = "";
+    memoryEnabled = payload.enabled !== undefined ? Boolean(payload.enabled) : memoryEnabled;
+    renderKnowledgePanel({ memory: payload.memory || [], sources: payload.knowledge_sources || [], memoryEnabled });
+    setSubtitle(payload.last_subtitle || `Forgot ${payload.removed || 0} matching memory item(s).`);
+  } catch {
+    setSubtitle("Forget memory could not reach the ULTRON runtime.");
+  }
+}
+
+async function searchKnowledge() {
+  const query = knowledgeSearchInput.value.trim();
+  if (!query) {
+    await loadMemoryKnowledge();
+    return;
+  }
+  try {
+    const payload = await fetchJson(`/api/knowledge/search?query=${encodeURIComponent(query)}&limit=5`);
+    renderKnowledgePanel({ matches: payload.knowledge?.matches || [], sources: payload.knowledge?.sources || [] });
+  } catch {
+    renderKnowledgePanel({ error: "Knowledge search unavailable." });
   }
 }
 
@@ -326,6 +448,7 @@ async function testVoiceProviders() {
     const tts = await postJson("/api/voice/test-tts", { text: "ULTRON voice provider test." });
     providerStatus = tts;
     applyProviders(tts);
+    applyVoiceDiagnostics(stt.voice_diagnostics || tts.voice_diagnostics);
     const transcript = stt.transcript?.text || "No transcript";
     const speechStatus = tts.speech?.status || "checked";
     setSubtitle(`STT: ${transcript}\nTTS: ${speechStatus}`);
@@ -345,26 +468,35 @@ async function startVoiceInput() {
     await stopAlwaysListening();
   }
   micEnabled = true;
-  micToggle.textContent = "Mic Off";
+  micToggle.textContent = "Stop Mic";
+  micStatusLabel.textContent = "On";
+  micPrivacyDetail.textContent = pushToTalk ? "Listening for one command" : "Continuous listening until stopped";
   voiceBadge.textContent = SpeechRecognition ? "Listening" : "Speech API unavailable";
   setVisualState("listening");
-  await postJson("/api/voice/start", { push_to_talk: pushToTalk });
+  const payload = await postJson("/api/voice/start", { push_to_talk: pushToTalk });
+  applyVoiceStatus(payload.voice);
+  applyWakeStatus(payload.wake);
   if (!SpeechRecognition) {
-    setSubtitle("Speech recognition is unavailable in this browser. Use typed input or Mock Voice.");
+    setSubtitle("This browser does not expose speech recognition. Open ULTRON in Chrome or Edge, then allow microphone access. Typed input and Mock Voice still work.");
     return;
   }
+  setSubtitle(pushToTalk ? "Listening. Speak one command now." : "Continuous listening is on. Speak when ready.");
   startRecognition();
 }
 
 async function stopVoiceInput() {
   micEnabled = false;
-  micToggle.textContent = "Mic On";
+  micToggle.textContent = "Start Mic";
+  micStatusLabel.textContent = "Off";
+  micPrivacyDetail.textContent = "Microphone stopped";
   voiceBadge.textContent = "Voice standby";
   setVisualState("idle");
   if (recognition && recognitionActive) {
     recognition.stop();
   }
-  await postJson("/api/voice/stop", {});
+  const payload = await postJson("/api/voice/stop", {});
+  applyVoiceStatus(payload.voice);
+  applyWakeStatus(payload.wake);
 }
 
 function setupSpeechRecognition() {
@@ -384,16 +516,29 @@ function setupSpeechRecognition() {
   };
   recognition.onresult = (event) => {
     const transcript = event.results?.[0]?.[0]?.transcript || "";
-    if (transcript.trim()) handleVoiceTranscript(transcript);
+    const confidence = event.results?.[0]?.[0]?.confidence;
+    if (transcript.trim()) handleVoiceTranscript(transcript, { confidence });
   };
   recognition.onerror = (event) => {
     voiceBadge.textContent = `Voice error: ${event.error}`;
-    setSubtitle("Voice capture had trouble. Typed mode is still available.");
-    setVisualState("idle");
+    if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+      setSubtitle("Microphone permission was blocked. Allow microphone access in the browser site settings, then press Start Mic again.");
+      micEnabled = false;
+      applyVoiceStatus({ microphone_enabled: false, muted: voiceMuted, push_to_talk: pushToTalk, listening: false, speaking: false });
+      setVisualState("idle");
+      return;
+    }
+    if (event.error === "no-speech") {
+      setSubtitle(pushToTalk ? "I did not hear speech. Press Start Mic and try again, or switch to Continuous." : "I did not hear speech. Still listening...");
+      setVisualState("listening");
+      return;
+    }
+    setSubtitle(`Voice capture error: ${event.error}. Typed mode and Mock Voice still work.`);
+    setVisualState(micEnabled ? "listening" : "idle");
   };
   recognition.onend = () => {
     recognitionActive = false;
-    if (micEnabled && !pushToTalk) {
+    if (micEnabled && !alwaysListening && !pushToTalk) {
       window.setTimeout(startRecognition, 350);
     }
   };
@@ -409,22 +554,30 @@ function startRecognition() {
   }
 }
 
-async function handleVoiceTranscript(transcript) {
+async function handleVoiceTranscript(transcript, options = {}) {
   if (!transcript.trim()) return;
   if (alwaysListening) {
     await handleWakeTranscript(transcript);
     return;
   }
-  setSubtitle(`You: ${transcript}`);
+  setSubtitle("Working on it.");
   setVisualState("thinking");
   voiceBadge.textContent = "Processing voice";
   try {
-    const payload = await postJson("/api/voice/transcribe", { transcript });
+    const body = { transcript };
+    if (typeof options.confidence === "number" && Number.isFinite(options.confidence) && options.confidence > 0.01) body.confidence = options.confidence;
+    const payload = await postJson("/api/voice/transcribe", body);
     applyVoiceStatus(payload.voice);
-    renderHistory(payload.history || []);
+    applyVoiceDiagnostics(payload.voice_diagnostics);
+    renderHistory([...(payload.conversation_history || []), ...(payload.history || [])]);
     const response = payload.spoken_response || payload.subtitle || payload.message || "Voice command processed.";
-    setSubtitle(payload.subtitle || `You: ${transcript}\nULTRON: ${response}`);
+    setSubtitle(formatAssistantSubtitle(payload, response));
     confirmVoiceButton.hidden = !payload.needs_confirmation;
+    if (payload.needs_confirmation || taskNeedsConfirmation(payload.task)) {
+      showConfirmation(payload.task, { command: payload.voice?.pending_confirmation_goal || transcript, source: "voice" });
+    } else {
+      clearPendingConfirmation();
+    }
     if (payload.status === "empty") {
       setVisualState("listening");
       return;
@@ -438,15 +591,49 @@ async function handleVoiceTranscript(transcript) {
   }
 }
 
+async function captureBackendVoice() {
+  setSubtitle("Listening.");
+  setVisualState("listening");
+  voiceBadge.textContent = "Backend capture";
+  try {
+    const payload = await postJson("/api/voice/capture", {});
+    applyVoiceStatus(payload.voice);
+    applyWakeStatus(payload.wake);
+    applyVoiceDiagnostics(payload.voice_diagnostics);
+    renderHistory([...(payload.conversation_history || []), ...(payload.history || [])]);
+    if (payload.status === "capture_unavailable") {
+      setSubtitle(payload.message || "Backend microphone capture is unavailable. Browser mic and typed mode still work.");
+      setVisualState("listening");
+      return;
+    }
+    const response = payload.spoken_response || payload.subtitle || payload.message || "Voice command processed.";
+    const understood = payload.record?.ultron_understood || payload.transcript?.text || "";
+    setSubtitle(formatAssistantSubtitle(payload, response));
+    if (payload.needs_confirmation || taskNeedsConfirmation(payload.task)) {
+      showConfirmation(payload.task, { command: payload.voice?.pending_confirmation_goal || understood, source: "voice" });
+      setVisualState("listening");
+      return;
+    }
+    clearPendingConfirmation();
+    setVisualState(payload.status === "empty" ? "listening" : "speaking");
+    await speakText(response);
+    scheduleListeningReturn();
+  } catch {
+    setSubtitle("Backend microphone capture could not reach the ULTRON runtime.");
+    setVisualState(micEnabled ? "listening" : "idle");
+  }
+}
+
 async function handleWakeTranscript(transcript) {
-  setSubtitle(`Heard: ${transcript}`);
+  setSubtitle("Checking the wake phrase.");
   setVisualState("transcribing");
   voiceBadge.textContent = "Checking wake gate";
   try {
     const payload = await postJson("/api/wake/process", { transcript, audio_energy: transcript.trim() ? 0.8 : 0.0 });
     applyVoiceStatus(payload.voice);
     applyWakeStatus(payload.wake);
-    renderHistory(payload.history || []);
+    applyVoiceDiagnostics(payload.voice_diagnostics);
+    renderHistory([...(payload.conversation_history || []), ...(payload.history || [])]);
     if (payload.status === "ignored") {
       setSubtitle(payload.message || "Input ignored by wake/VAD gate.");
       setVisualState(payload.visual_state || "waiting_for_wake_word");
@@ -458,8 +645,13 @@ async function handleWakeTranscript(transcript) {
       return;
     }
     const response = payload.spoken_response || payload.subtitle || payload.message || "Voice command processed.";
-    setSubtitle(payload.subtitle || `You: ${transcript}\nULTRON: ${response}`);
+    setSubtitle(formatAssistantSubtitle(payload, response));
     confirmVoiceButton.hidden = !payload.needs_confirmation;
+    if (payload.needs_confirmation || taskNeedsConfirmation(payload.task)) {
+      showConfirmation(payload.task, { command: payload.voice?.pending_confirmation_goal || transcript, source: "voice" });
+    } else {
+      clearPendingConfirmation();
+    }
     setVisualState(payload.needs_confirmation ? "listening" : "speaking");
     await speakText(response);
     scheduleListeningReturn();
@@ -470,6 +662,7 @@ async function handleWakeTranscript(transcript) {
 }
 
 async function speakText(text) {
+  armillaryCore.setSpeechText(text);
   const payload = await postJson("/api/speak", { text, muted: voiceMuted });
   applyVoiceStatus(payload.voice);
   if (payload.speech?.provider && providerStatus?.active) {
@@ -491,24 +684,42 @@ async function playBrowserSpeech(text) {
   }
   stopBrowserSpeech();
   const utterance = new SpeechSynthesisUtterance(text);
-  utterance.rate = providerStatus?.speech_settings?.rate || 0.92;
-  utterance.pitch = providerStatus?.speech_settings?.pitch || 0.72;
+  utterance.rate = providerStatus?.speech_settings?.rate || 0.94;
+  utterance.pitch = providerStatus?.speech_settings?.pitch || 0.86;
   utterance.volume = providerStatus?.speech_settings?.volume || 0.95;
-  const voices = window.speechSynthesis.getVoices();
-  const preferred = voices.find((voice) => /david|mark|guy|english|zira/i.test(voice.name)) || voices.find((voice) => voice.lang?.startsWith("en"));
+  const voices = await getBrowserVoices();
+  const preferred =
+    voices.find((voice) => /natural|online|neural|aria|guy|jenny/i.test(voice.name) && voice.lang?.startsWith("en")) ||
+    voices.find((voice) => /david|mark|zira|english/i.test(voice.name) && voice.lang?.startsWith("en")) ||
+    voices.find((voice) => voice.lang?.startsWith("en"));
   if (preferred) utterance.voice = preferred;
   utterance.onstart = () => {
+    armillaryCore.setSpeechText(text);
     voiceBadge.textContent = "Speaking";
     setVisualState("speaking");
   };
   utterance.onend = () => {
+    armillaryCore.setSpeechText("");
     voiceBadge.textContent = micEnabled ? "Listening" : "Voice standby";
     setVisualState(micEnabled ? "listening" : "idle");
   };
   window.speechSynthesis.speak(utterance);
 }
 
+async function getBrowserVoices() {
+  const immediate = window.speechSynthesis.getVoices();
+  if (immediate.length) return immediate;
+  return await new Promise((resolve) => {
+    const timeout = window.setTimeout(() => resolve(window.speechSynthesis.getVoices()), 700);
+    window.speechSynthesis.onvoiceschanged = () => {
+      window.clearTimeout(timeout);
+      resolve(window.speechSynthesis.getVoices());
+    };
+  });
+}
+
 function stopBrowserSpeech() {
+  armillaryCore.setSpeechText("");
   if (window.speechSynthesis) {
     window.speechSynthesis.cancel();
   }
@@ -522,6 +733,7 @@ function scheduleListeningReturn() {
 function setVisualState(state, options = {}) {
   if (!stateTargets[state]) state = "idle";
   visualState = state;
+  armillaryCore.setState(state);
   document.body.className = `state-${state}`;
   statusLabel.textContent = displayState(state);
   stateButtons.forEach((button) => button.classList.toggle("is-active", button.dataset.state === state));
@@ -549,16 +761,24 @@ function applyVoiceStatus(status) {
   micEnabled = Boolean(status.microphone_enabled);
   voiceMuted = Boolean(status.muted);
   pushToTalk = Boolean(status.push_to_talk);
-  micToggle.textContent = micEnabled ? "Mic Off" : "Mic On";
+  micToggle.textContent = micEnabled ? "Stop Mic" : "Start Mic";
   micStatusLabel.textContent = micEnabled ? "On" : "Off";
-  micPrivacyDetail.textContent = alwaysListening ? "Always-listening enabled" : "Push-to-talk available";
+  micPrivacyDetail.textContent = alwaysListening
+    ? "Always-listening enabled"
+    : micEnabled
+      ? pushToTalk
+        ? "Listening for one command"
+        : "Continuous listening until stopped"
+      : SpeechRecognition
+        ? "Microphone stopped"
+        : "Speech recognition unavailable";
   muteToggle.textContent = voiceMuted ? "Muted" : "Mute Off";
   muteToggle.setAttribute("aria-pressed", String(voiceMuted));
   pushToTalkToggle.textContent = pushToTalk ? "Push-to-talk" : "Continuous";
   pushToTalkToggle.setAttribute("aria-pressed", String(pushToTalk));
   confirmVoiceButton.hidden = !status.pending_confirmation_goal;
   voiceBadge.textContent = status.listening
-    ? "Listening"
+    ? SpeechRecognition ? "Listening" : "Speech API unavailable"
     : status.speaking
       ? `Speaking via ${status.tts_provider || "voice"}`
       : "Voice standby";
@@ -566,6 +786,24 @@ function applyVoiceStatus(status) {
     sttProviderLabel.textContent = status.stt_provider || "text_payload";
     ttsProviderLabel.textContent = status.tts_provider || "browser_speech_synthesis";
   }
+}
+
+function applyVoiceDiagnostics(diagnostics) {
+  if (!diagnostics) return;
+  const transcript = diagnostics.last_transcript || "None";
+  lastTranscriptLabel.textContent = transcript.length > 42 ? `${transcript.slice(0, 39)}...` : transcript;
+  const confidence = Number(diagnostics.confidence || 0);
+  const confidenceText = diagnostics.status === "clarification_required" || (confidence > 0 && confidence < 0.45)
+    ? `Low confidence: ${Math.round(confidence * 100)}%`
+    : confidence > 0
+      ? `Confidence: ${Math.round(confidence * 100)}%`
+      : "Confidence pending";
+  confidenceDetail.textContent = confidenceText;
+  audioStateLabel.textContent = diagnostics.rejected ? "Rejected" : displayState(diagnostics.status || "idle");
+  const duration = Number(diagnostics.audio_duration_ms || 0);
+  const speech = Number(diagnostics.speech_duration_ms || 0);
+  const energy = Number(diagnostics.audio_energy || 0);
+  audioDetail.textContent = diagnostics.detail || `${duration} ms audio, ${speech} ms speech, energy ${energy.toFixed(3)}`;
 }
 
 function applyWakeStatus(wake) {
@@ -594,16 +832,25 @@ function applyWakeStatus(wake) {
 
 function applyProviders(payload) {
   if (!payload) return;
+  if (payload.speech_settings) {
+    armillaryCore.setVoiceProfile(payload.speech_settings);
+  }
   const activeStt = payload.active?.stt || payload.voice?.stt_provider || "text_payload";
   const activeTts = payload.active?.tts || payload.voice?.tts_provider || "browser_speech_synthesis";
+  const activeCapture = payload.active?.capture || payload.voice_diagnostics?.capture_provider || "browser";
   const configuredStt = payload.configured?.stt || activeStt;
   const configuredTts = payload.configured?.tts || activeTts;
+  const configuredCapture = payload.configured?.capture || activeCapture;
   const sttHealth = payload.providers?.stt;
   const ttsHealth = payload.providers?.tts;
+  const captureHealth = payload.providers?.capture;
   sttProviderLabel.textContent = activeStt;
   ttsProviderLabel.textContent = activeTts;
+  captureProviderLabel.textContent = activeCapture;
   sttProviderDetail.textContent = providerDetail(configuredStt, activeStt, sttHealth);
   ttsProviderDetail.textContent = providerDetail(configuredTts, activeTts, ttsHealth);
+  captureProviderDetail.textContent = providerDetail(configuredCapture, activeCapture, captureHealth);
+  applyVoiceDiagnostics(payload.voice_diagnostics);
 }
 
 function providerDetail(configured, active, health) {
@@ -614,6 +861,8 @@ function providerDetail(configured, active, health) {
 }
 
 function displayState(state) {
+  if (state === "inactive") return "Shutdown";
+  if (state === "waiting_for_wake_word") return "Wake";
   return String(state || "idle")
     .replace(/_/g, " ")
     .replace(/\b\w/g, (char) => char.toUpperCase());
@@ -621,25 +870,147 @@ function displayState(state) {
 
 function renderHistory(items) {
   voiceHistory.innerHTML = "";
-  const recent = [...items].slice(-4).reverse();
+  const recent = [...items].slice(-6).reverse();
   if (!recent.length) {
     const empty = document.createElement("li");
-    empty.textContent = "No voice commands yet.";
+    empty.textContent = "No conversation yet.";
     voiceHistory.append(empty);
     return;
   }
   for (const item of recent) {
     const li = document.createElement("li");
-    const tool = item.tool_selected ? `Tool: ${item.tool_selected}` : "No tool selected";
-    li.innerHTML = `<strong>You</strong>: ${escapeHtml(item.user_said)}<br><strong>ULTRON</strong>: ${escapeHtml(item.spoken_response)}<br><span>${escapeHtml(tool)}</span>`;
+    if (item.user_said !== undefined) {
+      const tool = item.tool_selected ? `Tool: ${item.tool_selected}` : "No tool selected";
+      li.innerHTML = `<strong>You said</strong>: ${escapeHtml(item.user_said)}<br><strong>Understood</strong>: ${escapeHtml(item.ultron_understood)}<br><strong>ULTRON</strong>: ${escapeHtml(item.spoken_response)}<br><span>${escapeHtml(tool)}</span>`;
+    } else {
+      const route = item.route ? `Route: ${item.route}` : "Route: conversation";
+      li.innerHTML = `<strong>You</strong>: ${escapeHtml(item.user_input)}<br><strong>Understood</strong>: ${escapeHtml(item.understood)}<br><strong>ULTRON</strong>: ${escapeHtml(item.response)}<br><span>${escapeHtml(route)}</span>`;
+    }
     voiceHistory.append(li);
   }
+}
+
+function renderSkills(skills) {
+  skillsList.innerHTML = "";
+  if (!skills.length) {
+    appendListItem(skillsList, "No skills loaded.");
+    return;
+  }
+  for (const skill of skills) {
+    const li = document.createElement("li");
+    const name = document.createElement("strong");
+    name.textContent = skill.name;
+    const detail = document.createElement("span");
+    detail.textContent = ` ${skill.risk_level}: ${skill.description}`;
+    li.append(name, detail);
+    skillsList.append(li);
+  }
+}
+
+function renderKnowledgePanel({ memory = [], sources = [], matches = [], error = "", memoryEnabled: enabled = memoryEnabled }) {
+  knowledgeList.innerHTML = "";
+  memoryEnabled = Boolean(enabled);
+  memoryToggle.textContent = memoryEnabled ? "Memory On" : "Memory Off";
+  memoryToggle.setAttribute("aria-pressed", String(memoryEnabled));
+  if (error) {
+    appendListItem(knowledgeList, error);
+    return;
+  }
+  appendListItem(knowledgeList, `Memory: ${memoryEnabled ? "on" : "off"}`);
+  if (matches.length) {
+    for (const match of matches) {
+      appendListItem(knowledgeList, `${match.title}: ${match.snippet}`);
+    }
+    return;
+  }
+  if (sources.length) {
+    for (const source of sources.slice(-4).reverse()) {
+      appendListItem(knowledgeList, `${source.title} (${source.chunk_count} chunks)`);
+    }
+  }
+  if (memory.length) {
+    for (const item of memory.slice(-3).reverse()) {
+      appendListItem(knowledgeList, `${item.key}: ${item.value}`);
+    }
+  }
+  if (!sources.length && !memory.length) {
+    appendListItem(knowledgeList, "No memory or knowledge sources yet.");
+  }
+}
+
+function renderRecentTasks(items) {
+  recentTasksList.innerHTML = "";
+  const recent = [...items].slice(-5).reverse();
+  if (!recent.length) {
+    appendListItem(recentTasksList, "No recent tasks yet.");
+    return;
+  }
+  for (const task of recent) {
+    appendListItem(recentTasksList, `${task.status}: ${task.summary || task.goal || "Task updated"}`);
+  }
+}
+
+function appendListItem(list, text) {
+  const li = document.createElement("li");
+  li.textContent = text;
+  list.append(li);
 }
 
 function buildTaskSubtitle(task) {
   if (!task) return "";
   if (task.summary) return task.summary;
   return `Task ${task.status || "updated"}.`;
+}
+
+function formatAssistantSubtitle(payload, fallback) {
+  const text = payload?.spoken_response || payload?.subtitle || payload?.response || payload?.message || fallback || "";
+  return String(text || "Ready.").replace(/^(?:ULTRON:\s*)+/i, "").trim();
+}
+
+function taskNeedsConfirmation(task) {
+  if (!task) return false;
+  if (task.status === "waiting_for_confirmation") return true;
+  return Boolean((task.steps || []).some((step) => step.status === "waiting_for_confirmation"));
+}
+
+function showConfirmation(task, context) {
+  const step = firstPendingStep(task);
+  const policy = step?.policy || {};
+  const tool = step?.tool_call?.name || "unknown";
+  pendingConfirmation = { ...context, task };
+  confirmationTitle.textContent = "Review before execution";
+  confirmationMessage.textContent = task?.summary || policy.reason || "ULTRON paused before running this action.";
+  confirmationTool.textContent = tool;
+  confirmationPermission.textContent = policy.permission_level || policy.risk_level || "confirmation_required";
+  confirmationModal.hidden = false;
+}
+
+function firstPendingStep(task) {
+  return (task?.steps || []).find((step) => step.status === "waiting_for_confirmation") || task?.steps?.[0] || null;
+}
+
+async function approvePendingConfirmation() {
+  if (!pendingConfirmation) return;
+  const { command, source } = pendingConfirmation;
+  confirmationModal.hidden = true;
+  if (source === "voice") {
+    await handleVoiceTranscript("yes confirm");
+    return;
+  }
+  await sendCommand({ command, confirmed: true });
+}
+
+async function cancelPendingConfirmation() {
+  clearPendingConfirmation();
+  confirmVoiceButton.hidden = true;
+  await postJson("/api/confirmation/cancel", {}).catch(() => {});
+  setSubtitle("Action cancelled.");
+  setVisualState(alwaysListening ? "waiting_for_wake_word" : micEnabled ? "listening" : "idle");
+}
+
+function clearPendingConfirmation() {
+  pendingConfirmation = null;
+  confirmationModal.hidden = true;
 }
 
 async function fetchJson(url) {
@@ -690,6 +1061,7 @@ function animate() {
   particles.rotation.x = Math.sin(elapsed * 0.11) * 0.07;
   particles.material.opacity += ((visualState === "speaking" ? 0.75 : 0.42) - particles.material.opacity) * 0.04;
 
+  armillaryCore.update(elapsed, visualState);
   renderer.render(scene, camera);
   requestAnimationFrame(animate);
 }

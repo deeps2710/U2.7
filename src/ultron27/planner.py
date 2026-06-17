@@ -52,11 +52,14 @@ class DatasetPlanner:
 
     def plan(self, utterance: str) -> Plan:
         normalized = normalize_text(utterance)
+        deterministic = regex_plan(utterance)
+        if deterministic.source == "regex" and deterministic.tool_call.name == "open_terminal":
+            return deterministic
+
         exact = self._by_normalized.get(normalized)
         if exact is not None:
             return self._to_plan(utterance, exact, "dataset_exact", 1.0)
 
-        deterministic = regex_plan(utterance)
         if deterministic.source == "regex":
             return deterministic
 
@@ -97,6 +100,39 @@ def normalize_text(text: str) -> str:
 
 def regex_plan(utterance: str) -> Plan:
     text = normalize_text(utterance)
+    text = _normalize_app_alias_words(text)
+
+    if re.fullmatch(r"(?:hello|hi|hey)(?: ultron)?", text) or text in {"ultron", "hey ultron"}:
+        return _plan_from_tool(
+            utterance,
+            "assistant_reply",
+            "assistant_reply",
+            {"message": "At your service. Tell me what you need, and I will handle the safe parts for you."},
+            "regex",
+            0.78,
+        )
+
+    if re.search(r"\b(?:what can you do|help|commands|capabilities)\b", text):
+        return _plan_from_tool(
+            utterance,
+            "assistant_reply",
+            "assistant_reply",
+            {
+                "message": "I can open approved apps, create notes, search local files, search the web, open Spotify searches, set reminders and timers, use clipboard helpers, and ask for confirmation before risky actions."
+            },
+            "regex",
+            0.78,
+        )
+
+    if re.search(r"\b(?:thank you|thanks|good job)\b", text):
+        return _plan_from_tool(
+            utterance,
+            "assistant_reply",
+            "assistant_reply",
+            {"message": "Of course. I am ready for the next task."},
+            "regex",
+            0.76,
+        )
 
     volume_match = re.search(r"\b(?:volume|sound)\b.*?\b(\d{1,3})\b", text)
     if volume_match:
@@ -122,6 +158,23 @@ def regex_plan(utterance: str) -> Plan:
         title = append_note_match.group(2).strip()
         return _plan_from_tool(utterance, "append_note", "append_to_note", {"title": title, "content": content}, "regex", 0.70)
 
+    jot_match = re.search(r"\b(?:jot|write|note)\s+(?:this\s+)?(?:down\s*:?\s*)?(?:that\s+)?(.+)", text)
+    if jot_match and "notepad" not in text and " to note " not in text:
+        content = jot_match.group(1).strip()
+        if content:
+            return _plan_from_tool(utterance, "create_note", "create_note", {"title": "quick note", "content": content}, "regex", 0.66)
+
+    notepad_write_match = re.search(r"\b(?:write|type|jot)\s+(?:this\s+)?(?:in|inside|into)\s+notepad\b", text)
+    if notepad_write_match:
+        return _plan_from_tool(
+            utterance,
+            "clarify_intent",
+            "ask_clarification",
+            {"question": "What text should I write in Notepad?"},
+            "regex",
+            0.66,
+        )
+
     reminder_match = re.search(r"\bremind\s+me\s+to\s+(.+?)\s+(?:at|on|in)\s+(.+)", text)
     if reminder_match:
         return _plan_from_tool(
@@ -140,6 +193,21 @@ def regex_plan(utterance: str) -> Plan:
     if "screenshot" in text:
         return _plan_from_tool(utterance, "take_screenshot", "take_screenshot", {}, "regex", 0.70)
 
+    web_search_match = re.search(r"\b(?:search|look up|google)\s+(?:the\s+)?(?:web|internet|online|google)?\s*(?:for\s+)?(.+)", text)
+    if web_search_match and re.search(r"\b(?:web|internet|online|google)\b", text):
+        query = web_search_match.group(1).strip()
+        if query and query not in {"web", "internet", "online", "google"}:
+            return _plan_from_tool(utterance, "search_web", "search_web", {"query": query}, "regex", 0.70)
+
+    spotify_match = re.search(
+        r"\b(?:play|stream)\s+(?:the\s+song\s+|song\s+|music\s+|track\s+)?(.+?)(?:\s+(?:on|through|in)\s+spotify)?$",
+        text,
+    )
+    if spotify_match and ("spotify" in text or re.search(r"\b(?:play|stream)\b", text)):
+        query = re.sub(r"\s+(?:on|through|in)\s+spotify$", "", spotify_match.group(1).strip())
+        if query and query != "spotify":
+            return _plan_from_tool(utterance, "play_music", "play_music", {"query": query}, "regex", 0.70)
+
     copy_match = re.search(r"\bcopy\s+(.+)\s+to\s+(?:the\s+)?clipboard", text)
     if copy_match:
         return _plan_from_tool(utterance, "copy_clipboard", "copy_to_clipboard", {"text": copy_match.group(1).strip()}, "regex", 0.68)
@@ -151,7 +219,18 @@ def regex_plan(utterance: str) -> Plan:
     if open_folder_match:
         return _plan_from_tool(utterance, "open_folder", "open_folder", {"folder": open_folder_match.group(1).title()}, "regex", 0.70)
 
-    open_app_match = re.search(r"\bopen\s+([a-z0-9 ._-]+)$", text)
+    open_terminal_match = re.search(r"\bopen\s+(terminal|windows terminal|command prompt|cmd|powershell)\b", text)
+    if open_terminal_match:
+        return _plan_from_tool(
+            utterance,
+            "open_terminal",
+            "open_terminal",
+            {"terminal_type": open_terminal_match.group(1).strip()},
+            "regex",
+            0.70,
+        )
+
+    open_app_match = re.search(r"\b(?:open|launch|start|run|bring up|pull up|show me)\s+(?:the\s+)?([a-z0-9 ._-]+?)(?:\s+app)?$", text)
     if open_app_match:
         app = open_app_match.group(1).strip()
         return _plan_from_tool(utterance, "open_app", "open_application", {"app": app}, "regex", 0.68)
@@ -192,3 +271,16 @@ def _plan_from_tool(
 
 def clamp(value: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
+
+
+def _normalize_app_alias_words(text: str) -> str:
+    replacements = {
+        "notes app": "notepad",
+        "note app": "notepad",
+        "text editor": "notepad",
+        "basic text editor": "notepad",
+    }
+    value = text
+    for source, target in replacements.items():
+        value = re.sub(rf"\b{re.escape(source)}\b", target, value)
+    return value

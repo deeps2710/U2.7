@@ -29,6 +29,8 @@ class OllamaProvider:
             "model": self.model,
             "stream": False,
             "format": "json",
+            "think": False,
+            "options": {"temperature": 0, "num_predict": 220},
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
@@ -53,13 +55,20 @@ class OllamaProvider:
 
 
 class LLMPlanner:
-    def __init__(self, provider: LLMProvider, timeout: float = 8.0):
+    def __init__(self, provider: LLMProvider, timeout: float = 8.0, *, min_confidence: float = 0.52):
         self.provider = provider
         self.timeout = timeout
+        self.min_confidence = min_confidence
 
     def plan(self, utterance: str) -> Plan:
         raw = self.provider.complete(build_prompt(utterance), self.timeout)
         call, intent, confidence = parse_llm_tool_call(raw)
+        if call.name not in {"ask_clarification", "unsupported_request"} and confidence < self.min_confidence:
+            call = ToolCall(
+                "ask_clarification",
+                {"question": "I am not fully sure what action you want. Please say it another way or add one detail."},
+            )
+            intent = "clarify_intent"
         validation = validate_tool_call(call)
         if not validation.valid:
             raise LLMPlannerError("; ".join(validation.errors))
@@ -77,7 +86,24 @@ class LLMPlanner:
         )
 
 
-SYSTEM_PROMPT = """You are ULTRON 2.7's planner. Return only one JSON object. Do not execute commands."""
+class SemanticIntentRouter:
+    """Local-LLM semantic router that can only return validated typed tool plans."""
+
+    def __init__(self, planner: LLMPlanner):
+        self.planner = planner
+
+    def route(self, utterance: str) -> Plan:
+        return self.planner.plan(utterance)
+
+
+SYSTEM_PROMPT = """You are ULTRON 2.7's private planner.
+Return only one JSON object. Do not execute commands. Do not write thoughts, reasoning, narration, markdown, or conversational prose."""
+
+
+COMMAND_CLASSIFICATION_TEMPLATE = """Classify whether the user wants chat, clarification, or an executable typed tool."""
+TOOL_SELECTION_TEMPLATE = """Select exactly one allowlisted tool and fill only schema-supported arguments."""
+MULTI_STEP_TEMPLATE = """If the user asks for a multi-step task, choose the next safest atomic tool step."""
+CLARIFICATION_TEMPLATE = """If required information is missing or the intent is ambiguous, use ask_clarification."""
 
 
 def build_prompt(utterance: str) -> str:
@@ -88,10 +114,25 @@ def build_prompt(utterance: str) -> str:
         tool_lines.append(f"- {name}: required={required}; optional={optional}; risk={spec.risk_level.value}")
     tools = "\n".join(tool_lines)
     return (
-        "Map the user command to one allowlisted tool call.\n"
+        "Map the user command to one allowlisted tool call. The model is not allowed to execute anything.\n"
+        "Do not explain your thinking. Do not speak as ULTRON. Output JSON only.\n"
+        f"{COMMAND_CLASSIFICATION_TEMPLATE}\n"
+        f"{TOOL_SELECTION_TEMPLATE}\n"
+        f"{MULTI_STEP_TEMPLATE}\n"
+        f"{CLARIFICATION_TEMPLATE}\n\n"
         "Return JSON in this exact shape:\n"
-        '{"intent":"...", "tool_name":"...", "tool_arguments":{...}, "confidence":0.0}\n'
-        "If no safe tool fits, use unsupported_request with reason.\n\n"
+        '{"intent":"...", "tool_name":"...", "tool_arguments":{...}, "confidence":0.0, "needs_clarification":false, "clarification_question":""}\n'
+        "If no safe tool fits, use unsupported_request with reason.\n"
+        "If the request is ambiguous, missing key details, or asks to type into another app before that tool exists, use ask_clarification with a direct question.\n"
+        "Examples:\n"
+        '- "open notepad" -> {"intent":"open_app","tool_name":"open_application","tool_arguments":{"app":"notepad"},"confidence":0.95}\n'
+        '- "launch notepad" -> {"intent":"open_app","tool_name":"open_application","tool_arguments":{"app":"notepad"},"confidence":0.92}\n'
+        '- "bring up notepad" -> {"intent":"open_app","tool_name":"open_application","tool_arguments":{"app":"notepad"},"confidence":0.9}\n'
+        '- "start the notes app" -> {"intent":"open_app","tool_name":"open_application","tool_arguments":{"app":"notepad"},"confidence":0.82}\n'
+        '- "play blinding lights on Spotify" -> {"intent":"play_music","tool_name":"play_music","tool_arguments":{"query":"blinding lights"},"confidence":0.91}\n'
+        '- "put on some lofi music" -> {"intent":"play_music","tool_name":"play_music","tool_arguments":{"query":"lofi music"},"confidence":0.78}\n'
+        '- "write this in notepad" -> {"intent":"clarify_intent","tool_name":"ask_clarification","tool_arguments":{"question":"What text should I write in Notepad?"},"confidence":0.72,"needs_clarification":true}\n'
+        '- "jot this down: voice mode works" -> {"intent":"create_note","tool_name":"create_note","tool_arguments":{"title":"quick note","content":"voice mode works"},"confidence":0.78}\n\n'
         f"Available tools:\n{tools}\n\n"
         f"User command: {utterance}"
     )
@@ -99,23 +140,23 @@ def build_prompt(utterance: str) -> str:
 
 def parse_llm_tool_call(raw: str) -> tuple[ToolCall, str, float]:
     payload = _extract_json_object(raw)
+    if payload.get("needs_clarification") is True:
+        question = str(payload.get("clarification_question") or payload.get("question") or "Could you clarify what you want me to do?")
+        return ToolCall("ask_clarification", {"question": question}), str(payload.get("intent", "clarify_intent")), _confidence(payload)
     tool_name = payload.get("tool_name") or payload.get("name")
     arguments = payload.get("tool_arguments", payload.get("arguments", {}))
     intent = str(payload.get("intent", tool_name or ""))
-    confidence = payload.get("confidence", 0.5)
 
     if not isinstance(tool_name, str) or not tool_name:
         raise LLMPlannerError("LLM output must include tool_name")
     if not isinstance(arguments, dict):
         raise LLMPlannerError("LLM output tool_arguments must be an object")
-    if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
-        confidence = 0.5
-    confidence = max(0.0, min(1.0, float(confidence)))
-    return ToolCall(tool_name, arguments), intent, confidence
+    return ToolCall(tool_name, arguments), intent, _confidence(payload)
 
 
 def _extract_json_object(raw: str) -> dict[str, Any]:
     text = raw.strip()
+    text = _strip_thinking_blocks(text)
     if text.startswith("```"):
         text = text.strip("`")
         if text.startswith("json"):
@@ -133,6 +174,27 @@ def _extract_json_object(raw: str) -> dict[str, Any]:
     return payload
 
 
+def _strip_thinking_blocks(text: str) -> str:
+    while "<think>" in text.lower() and "</think>" in text.lower():
+        lowered = text.lower()
+        start = lowered.find("<think>")
+        end = lowered.find("</think>", start)
+        if start == -1 or end == -1:
+            break
+        text = text[:start] + text[end + len("</think>") :]
+    return text.strip()
+
+
+def _confidence(payload: dict[str, Any]) -> float:
+    confidence = payload.get("confidence", 0.5)
+    if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
+        confidence = 0.5
+    return max(0.0, min(1.0, float(confidence)))
+
+
 def make_ollama_planner(endpoint: str, model: str, timeout: float) -> LLMPlanner:
     return LLMPlanner(OllamaProvider(endpoint=endpoint, model=model), timeout=timeout)
 
+
+def make_ollama_router(endpoint: str, model: str, timeout: float) -> SemanticIntentRouter:
+    return SemanticIntentRouter(make_ollama_planner(endpoint, model, timeout))

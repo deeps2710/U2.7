@@ -8,10 +8,11 @@ from typing import Any
 from .audit import append_audit_record
 from .config import UltronConfig
 from .executor import Executor
-from .llm import LLMPlannerError, make_ollama_planner
+from .llm import LLMPlannerError, make_ollama_router
 from .planner import DatasetPlanner
 from .policy import decide
-from .tools import validate_tool_call
+from .models import Plan, RiskLevel, ToolCall
+from .tools import get_tool_spec, validate_tool_call
 
 
 @dataclass(frozen=True)
@@ -77,17 +78,52 @@ class UltronAssistant:
         ):
             llm_trace["attempted"] = True
             try:
-                llm = make_ollama_planner(
+                router = make_ollama_router(
                     endpoint=self.settings.llm_endpoint,
                     model=self.settings.llm_model,
                     timeout=self.settings.llm_timeout_seconds,
                 )
-                plan = llm.plan(utterance)
+                plan = router.route(utterance)
             except LLMPlannerError as exc:
                 llm_trace["error"] = str(exc)
                 if self.settings.planner_mode == "llm":
                     plan = self.planner.plan(utterance)
 
+        return self._execute_plan(utterance, plan, confirmed=confirmed, llm_trace=llm_trace)
+
+    def handle_tool_call(
+        self,
+        utterance: str,
+        tool_call: ToolCall,
+        *,
+        intent: str = "skill",
+        source: str = "skill",
+        confidence: float = 1.0,
+        confirmed: bool = False,
+    ) -> dict[str, Any]:
+        spec = get_tool_spec(tool_call.name)
+        risk_level = spec.risk_level if spec else RiskLevel.BLOCKED
+        requires_confirmation = spec.requires_confirmation if spec else True
+        plan = Plan(
+            utterance=utterance,
+            intent=intent,
+            tool_call=tool_call,
+            risk_level=risk_level,
+            requires_confirmation=requires_confirmation,
+            source=source,
+            confidence=confidence,
+        )
+        return self._execute_plan(utterance, plan, confirmed=confirmed, llm_trace={"attempted": False, "error": None})
+
+    def _execute_plan(
+        self,
+        utterance: str,
+        plan: Plan,
+        *,
+        confirmed: bool = False,
+        llm_trace: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        llm_trace = llm_trace or {"attempted": False, "error": None}
         validation = validate_tool_call(plan.tool_call)
         decision = decide(plan, validation, confirmed=confirmed)
         executor = Executor(

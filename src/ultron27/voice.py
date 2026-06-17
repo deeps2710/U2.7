@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import wave
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -27,6 +28,8 @@ from .wake import (
 
 
 CONFIRMATION_PHRASES = {"yes confirm", "confirm", "confirmed", "yes proceed", "proceed"}
+LOW_CONFIDENCE_THRESHOLD = 0.45
+MIN_SPEECH_MS = 180
 
 
 class STTProvider(Protocol):
@@ -46,24 +49,41 @@ class TTSProvider(Protocol):
         ...
 
 
+class MicrophoneCaptureProvider(Protocol):
+    name: str
+
+    def capture(self, payload: dict[str, Any]) -> dict[str, Any]:
+        ...
+
+
 @dataclass(frozen=True)
 class VoiceProviderConfig:
     stt_provider: str = "text_payload"
+    capture_provider: str = "browser"
+    microphone_device: str | None = None
+    sample_rate: int = 16000
+    capture_seconds: float = 4.0
     tts_provider: str = "browser_speech_synthesis"
     stt_model_path: Path | None = None
     tts_model_path: Path | None = None
     tts_voice_path: Path | None = None
     device: str = "cpu"
     voice_identity: str = "ULTRON"
-    rate: float = 0.92
-    pitch: float = 0.72
+    rate: float = 0.94
+    pitch: float = 0.86
     volume: float = 0.95
+    stt_model: str | None = None
 
     @classmethod
     def from_config(cls, config: Any) -> "VoiceProviderConfig":
         return cls(
             stt_provider=str(getattr(config, "voice_stt_provider", cls.stt_provider)).lower(),
+            capture_provider=str(getattr(config, "voice_capture_provider", cls.capture_provider)).lower(),
+            microphone_device=getattr(config, "voice_microphone_device", None),
+            sample_rate=int(getattr(config, "voice_sample_rate", cls.sample_rate)),
+            capture_seconds=float(getattr(config, "voice_capture_seconds", cls.capture_seconds)),
             tts_provider=str(getattr(config, "voice_tts_provider", cls.tts_provider)).lower(),
+            stt_model=getattr(config, "voice_stt_model", None),
             stt_model_path=getattr(config, "voice_stt_model_path", None),
             tts_model_path=getattr(config, "voice_tts_model_path", None),
             tts_voice_path=getattr(config, "voice_tts_voice_path", None),
@@ -101,19 +121,39 @@ class STTResult:
 
 
 @dataclass
+class AudioDiagnostics:
+    active_microphone: str = "browser"
+    capture_provider: str = "browser"
+    stt_provider: str = "text_payload"
+    stt_model_path: str | None = None
+    last_transcript: str = ""
+    confidence: float = 0.0
+    audio_duration_ms: int = 0
+    speech_duration_ms: int = 0
+    audio_energy: float = 0.0
+    rejected: bool = False
+    noisy: bool = False
+    status: str = "idle"
+    detail: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class VoiceStatus:
     microphone_enabled: bool = False
     listening: bool = False
     muted: bool = False
     speaking: bool = False
-    push_to_talk: bool = True
+    push_to_talk: bool = False
     stt_provider: str = "text_payload"
     tts_provider: str = "browser_speech_synthesis"
     configured_stt_provider: str = "text_payload"
     configured_tts_provider: str = "browser_speech_synthesis"
     voice_identity: str = "ULTRON"
-    voice_rate: float = 0.92
-    voice_pitch: float = 0.72
+    voice_rate: float = 0.94
+    voice_pitch: float = 0.86
     voice_volume: float = 0.95
     pending_confirmation_goal: str | None = None
     last_error: str | None = None
@@ -142,8 +182,9 @@ class TextPayloadSTT:
 
     def transcribe(self, payload: dict[str, Any]) -> STTResult:
         text = str(payload.get("transcript") or payload.get("text") or "").strip()
-        normalized = strip_wake_word(text)
-        return STTResult(text=normalized, confidence=1.0 if normalized else 0.0, provider=self.name, empty=not bool(normalized))
+        normalized = clean_transcript(text)
+        confidence = _payload_confidence(payload, default=1.0 if normalized else 0.0)
+        return STTResult(text=normalized, confidence=confidence, provider=self.name, empty=not bool(normalized))
 
     def health(self) -> ProviderHealth:
         return ProviderHealth("stt", self.name, configured=True, active=True, available=True, detail="Accepts transcript/text payloads.")
@@ -165,7 +206,7 @@ class MockSTT(TextPayloadSTT):
     def transcribe(self, payload: dict[str, Any]) -> STTResult:
         if payload.get("transcript") or payload.get("text"):
             return super().transcribe(payload)
-        normalized = strip_wake_word(self.transcript)
+        normalized = clean_transcript(self.transcript)
         return STTResult(text=normalized, confidence=1.0, provider=self.name, empty=not bool(normalized))
 
     def health(self) -> ProviderHealth:
@@ -175,8 +216,9 @@ class MockSTT(TextPayloadSTT):
 class FasterWhisperSTT(TextPayloadSTT):
     name = "faster_whisper"
 
-    def __init__(self, model_path: Path | None, *, device: str = "cpu") -> None:
+    def __init__(self, model_path: Path | None, *, model_name: str | None = None, device: str = "cpu") -> None:
         self.model_path = model_path
+        self.model_name = model_name
         self.device = device
 
     def transcribe(self, payload: dict[str, Any]) -> STTResult:
@@ -191,22 +233,32 @@ class FasterWhisperSTT(TextPayloadSTT):
         try:
             from faster_whisper import WhisperModel  # type: ignore[import-not-found]
 
-            model = WhisperModel(str(self.model_path), device=self.device)
+            model = WhisperModel(self._model_reference(), device=self.device)
             segments, info = model.transcribe(str(audio_path))
             text = " ".join(segment.text.strip() for segment in segments).strip()
             confidence = float(getattr(info, "language_probability", 1.0))
-            return STTResult(text=strip_wake_word(text), confidence=confidence, provider=self.name, empty=not bool(text))
+            normalized = clean_transcript(text)
+            return STTResult(text=normalized, confidence=confidence, provider=self.name, empty=not bool(normalized))
         except Exception:
             return STTResult(text="", confidence=0.0, provider=self.name, empty=True)
 
     def health(self) -> ProviderHealth:
         if importlib.util.find_spec("faster_whisper") is None:
             return ProviderHealth("stt", self.name, configured=True, active=False, available=False, detail="Python package faster-whisper is not installed.", fallback_to="browser")
+        if self.model_name:
+            return ProviderHealth("stt", self.name, configured=True, active=True, available=True, detail=f"Ready to use faster-whisper model name: {self.model_name}.")
         if self.model_path is None:
-            return ProviderHealth("stt", self.name, configured=True, active=False, available=False, detail="No faster-whisper model path is configured.", fallback_to="browser")
+            return ProviderHealth("stt", self.name, configured=True, active=False, available=False, detail="No faster-whisper model name or model path is configured.", fallback_to="browser")
         if not self.model_path.exists():
             return ProviderHealth("stt", self.name, configured=True, active=False, available=False, detail=f"Model path not found: {self.model_path}", fallback_to="browser")
         return ProviderHealth("stt", self.name, configured=True, active=True, available=True, detail=f"Ready on {self.device}.")
+
+    def _model_reference(self) -> str:
+        if self.model_name:
+            return self.model_name
+        if self.model_path is not None:
+            return str(self.model_path)
+        return "base.en"
 
 
 class WhisperCppSTT(TextPayloadSTT):
@@ -237,7 +289,8 @@ class WhisperCppSTT(TextPayloadSTT):
         except Exception:
             return STTResult(text="", confidence=0.0, provider=self.name, empty=True)
         output = process.stdout.strip()
-        return STTResult(text=strip_wake_word(output), confidence=1.0 if output else 0.0, provider=self.name, empty=not bool(output))
+        normalized = clean_transcript(output)
+        return STTResult(text=normalized, confidence=1.0 if normalized else 0.0, provider=self.name, empty=not bool(normalized))
 
     def health(self) -> ProviderHealth:
         if not self.executable:
@@ -369,6 +422,98 @@ class MockTTS:
         return ProviderHealth("tts", self.name, configured=True, active=True, available=True, detail="Deterministic mock TTS provider for tests.")
 
 
+class BrowserMicrophoneCapture:
+    name = "browser"
+
+    def capture(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "status": "delegated",
+            "provider": self.name,
+            "message": "Microphone capture is delegated to the browser client.",
+            "transcript": payload.get("transcript") or payload.get("text") or "",
+        }
+
+    def health(self) -> ProviderHealth:
+        return ProviderHealth("capture", self.name, configured=True, active=True, available=True, detail="Browser captures audio/transcripts.")
+
+
+class MockMicrophoneCapture:
+    name = "mock_capture"
+
+    def __init__(self, transcript: str = "ULTRON, create note backend voice is working") -> None:
+        self.transcript = transcript
+
+    def capture(self, payload: dict[str, Any]) -> dict[str, Any]:
+        transcript = str(payload.get("transcript") or payload.get("text") or self.transcript)
+        return {
+            "status": "ok",
+            "provider": self.name,
+            "transcript": transcript,
+            "audio_duration_ms": int(payload.get("audio_duration_ms", 1200)),
+            "speech_ms": int(payload.get("speech_ms", 850)),
+            "audio_energy": float(payload.get("audio_energy", 0.22)),
+            "message": "Mock microphone capture completed.",
+        }
+
+    def health(self) -> ProviderHealth:
+        return ProviderHealth("capture", self.name, configured=True, active=True, available=True, detail="Deterministic mock microphone capture.")
+
+
+class SoundDeviceMicrophoneCapture:
+    name = "sounddevice"
+
+    def __init__(self, *, sample_rate: int = 16000, default_seconds: float = 4.0, device: str | None = None) -> None:
+        self.sample_rate = max(8000, min(48000, int(sample_rate)))
+        self.default_seconds = max(0.25, min(15.0, float(default_seconds)))
+        self.device = device
+
+    def capture(self, payload: dict[str, Any]) -> dict[str, Any]:
+        health = self.health()
+        if not health.available:
+            return {"status": "unavailable", "provider": self.name, "message": health.detail}
+        seconds = max(0.25, min(15.0, float(payload.get("seconds", self.default_seconds))))
+        frames = int(self.sample_rate * seconds)
+        try:
+            import sounddevice as sd  # type: ignore[import-not-found]
+
+            audio = sd.rec(frames, samplerate=self.sample_rate, channels=1, dtype="int16", device=self.device)
+            sd.wait()
+        except Exception as exc:  # pragma: no cover - hardware dependent
+            return {"status": "error", "provider": self.name, "message": f"Microphone capture failed: {exc}"}
+
+        raw = audio.tobytes()
+        output = tempfile.NamedTemporaryFile(prefix="ultron-mic-", suffix=".wav", delete=False)
+        output.close()
+        path = Path(output.name)
+        try:
+            with wave.open(str(path), "wb") as handle:
+                handle.setnchannels(1)
+                handle.setsampwidth(2)
+                handle.setframerate(self.sample_rate)
+                handle.writeframes(raw)
+        except Exception as exc:  # pragma: no cover - filesystem defensive
+            return {"status": "error", "provider": self.name, "message": f"Could not save captured audio: {exc}"}
+
+        energy = _pcm16_energy(raw)
+        speech_ms = int(seconds * 1000) if energy > 0.012 else 0
+        return {
+            "status": "ok",
+            "provider": self.name,
+            "audio_path": str(path),
+            "audio_duration_ms": int(seconds * 1000),
+            "speech_ms": speech_ms,
+            "audio_energy": energy,
+            "sample_rate": self.sample_rate,
+            "microphone": self.device or "default",
+            "message": "Backend microphone capture completed.",
+        }
+
+    def health(self) -> ProviderHealth:
+        if importlib.util.find_spec("sounddevice") is None:
+            return ProviderHealth("capture", self.name, configured=True, active=False, available=False, detail="Python package sounddevice is not installed.", fallback_to="browser")
+        return ProviderHealth("capture", self.name, configured=True, active=True, available=True, detail=f"Ready at {self.sample_rate} Hz.")
+
+
 class VoiceSession:
     def __init__(
         self,
@@ -381,6 +526,8 @@ class VoiceSession:
         vad: VADProvider | None = None,
         configured_wake: WakeWordProvider | None = None,
         configured_vad: VADProvider | None = None,
+        capture: MicrophoneCaptureProvider | None = None,
+        configured_capture: MicrophoneCaptureProvider | None = None,
         provider_config: VoiceProviderConfig | None = None,
         wake_config: WakeGateConfig | None = None,
         history_limit: int = 20,
@@ -395,6 +542,8 @@ class VoiceSession:
         self.configured_tts = configured_tts or self.tts
         self.configured_wake = configured_wake or self.wake
         self.configured_vad = configured_vad or self.vad
+        self.capture = capture or BrowserMicrophoneCapture()
+        self.configured_capture = configured_capture or self.capture
         self.status = VoiceStatus(
             stt_provider=self.stt.name,
             tts_provider=self.tts.name,
@@ -412,6 +561,12 @@ class VoiceSession:
         )
         self.history: list[TranscriptRecord] = []
         self.history_limit = history_limit
+        self.diagnostics = AudioDiagnostics(
+            active_microphone=self.provider_config.microphone_device or "browser",
+            capture_provider=self.capture.name,
+            stt_provider=self.stt.name,
+            stt_model_path=str(self.provider_config.stt_model_path) if self.provider_config.stt_model_path else None,
+        )
 
     def start(self, *, push_to_talk: bool | None = None) -> dict[str, Any]:
         if push_to_talk is not None:
@@ -428,6 +583,10 @@ class VoiceSession:
             self.stop_wake()
         return self.snapshot({"status": "ok"})
 
+    def cancel_confirmation(self) -> dict[str, Any]:
+        self.status.pending_confirmation_goal = None
+        return self.snapshot({"status": "ok", "message": "Pending confirmation cancelled."})
+
     def set_muted(self, muted: bool) -> dict[str, Any]:
         self.status.muted = bool(muted)
         if muted:
@@ -437,10 +596,17 @@ class VoiceSession:
     def transcribe_and_run(self, payload: dict[str, Any], command_runner) -> dict[str, Any]:
         self.status.listening = False
         self.wake_status.mode = "transcribing" if self.wake_status.always_listening else self.wake_status.mode
+        audio = analyze_audio_payload(payload)
+        if audio["rejected"] and not (payload.get("transcript") or payload.get("text")):
+            self.status.last_error = str(audio["reason"])
+            self._update_diagnostics(payload, None, status="rejected", detail=self.status.last_error, audio=audio)
+            return self.snapshot({"status": "empty", "message": self.status.last_error, "audio": audio, "voice_diagnostics": self.diagnostics.to_dict()})
         result = self.stt.transcribe(payload)
-        if result.empty:
+        self._update_diagnostics(payload, result, status="transcribed", detail="Transcript received.", audio=audio)
+        if result.empty or _looks_like_empty_audio(payload):
             self.status.last_error = "No speech was detected."
-            return self.snapshot({"status": "empty", "transcript": result.to_dict(), "message": self.status.last_error})
+            self._update_diagnostics(payload, result, status="empty", detail=self.status.last_error, audio=audio)
+            return self.snapshot({"status": "empty", "transcript": result.to_dict(), "audio": audio, "message": self.status.last_error, "voice_diagnostics": self.diagnostics.to_dict()})
 
         confirmed = False
         goal = result.text
@@ -448,6 +614,35 @@ class VoiceSession:
         if normalized in CONFIRMATION_PHRASES and self.status.pending_confirmation_goal:
             confirmed = True
             goal = self.status.pending_confirmation_goal
+
+        if not confirmed and _needs_clarification(result):
+            spoken_response = clarification_response(result.text)
+            record = TranscriptRecord(
+                transcript_id=str(uuid.uuid4()),
+                user_said=str(payload.get("transcript") or payload.get("text") or result.text),
+                ultron_understood=result.text,
+                tool_selected=None,
+                action_result="clarification_required",
+                spoken_response=spoken_response,
+                needs_confirmation=False,
+            )
+            self._remember(record)
+            self.status.last_error = "Transcript confidence was too low."
+            self.status.speaking = not self.status.muted
+            if self.wake_status.always_listening:
+                self.wake_status.mode = "speaking" if self.status.speaking else "waiting_for_wake_word"
+            self._update_diagnostics(payload, result, status="clarification_required", detail=self.status.last_error, audio=audio)
+            return self.snapshot(
+                {
+                    "status": "clarification_required",
+                    "transcript": result.to_dict(),
+                    "audio": audio,
+                    "spoken_response": spoken_response,
+                    "needs_confirmation": False,
+                    "record": record.to_dict(),
+                    "voice_diagnostics": self.diagnostics.to_dict(),
+                }
+            )
 
         command_payload = command_runner(goal, confirmed=confirmed)
         task = command_payload.get("task") if isinstance(command_payload, dict) else None
@@ -477,13 +672,26 @@ class VoiceSession:
             {
                 "status": "ok",
                 "transcript": result.to_dict(),
+                "audio": audio,
                 "confirmed": confirmed,
                 "task": task,
                 "spoken_response": spoken_response,
                 "needs_confirmation": needs_confirmation,
                 "record": record.to_dict(),
+                "voice_diagnostics": self.diagnostics.to_dict(),
             }
         )
+
+    def capture_and_run(self, payload: dict[str, Any], command_runner) -> dict[str, Any]:
+        self.status.microphone_enabled = True
+        self.status.listening = True
+        capture_payload = self.capture.capture(payload)
+        if capture_payload.get("status") not in {"ok", "delegated"}:
+            self.status.last_error = str(capture_payload.get("message", "Microphone capture is unavailable."))
+            self._update_diagnostics(capture_payload, None, status=str(capture_payload.get("status", "unavailable")), detail=self.status.last_error)
+            return self.snapshot({"status": "capture_unavailable", "capture": capture_payload, "message": self.status.last_error, "voice_diagnostics": self.diagnostics.to_dict()})
+        merged = {**payload, **capture_payload}
+        return self.transcribe_and_run(merged, command_runner)
 
     def speak(self, text: str) -> dict[str, Any]:
         if self.status.muted:
@@ -621,20 +829,26 @@ class VoiceSession:
     def providers_status(self) -> dict[str, Any]:
         stt_configured = _health(self.configured_stt, kind="stt", configured=True, active=self.configured_stt.name == self.stt.name)
         tts_configured = _health(self.configured_tts, kind="tts", configured=True, active=self.configured_tts.name == self.tts.name)
+        capture_configured = _health(self.configured_capture, kind="capture", configured=True, active=self.configured_capture.name == self.capture.name)
         stt_active = _health(self.stt, kind="stt", configured=self.configured_stt.name == self.stt.name, active=True)
         tts_active = _health(self.tts, kind="tts", configured=self.configured_tts.name == self.tts.name, active=True)
+        capture_active = _health(self.capture, kind="capture", configured=self.configured_capture.name == self.capture.name, active=True)
         if self.configured_stt.name != self.stt.name:
             stt_configured.fallback_to = self.stt.name
         if self.configured_tts.name != self.tts.name:
             tts_configured.fallback_to = self.tts.name
+        if self.configured_capture.name != self.capture.name:
+            capture_configured.fallback_to = self.capture.name
         return {
-            "configured": {"stt": self.configured_stt.name, "tts": self.configured_tts.name},
-            "active": {"stt": self.stt.name, "tts": self.tts.name},
+            "configured": {"stt": self.configured_stt.name, "tts": self.configured_tts.name, "capture": self.configured_capture.name},
+            "active": {"stt": self.stt.name, "tts": self.tts.name, "capture": self.capture.name},
             "providers": {
                 "stt": stt_configured.to_dict(),
                 "tts": tts_configured.to_dict(),
+                "capture": capture_configured.to_dict(),
                 "active_stt": stt_active.to_dict(),
                 "active_tts": tts_active.to_dict(),
+                "active_capture": capture_active.to_dict(),
             },
             "voice_identity": self.provider_config.voice_identity,
             "speech_settings": {
@@ -642,7 +856,11 @@ class VoiceSession:
                 "pitch": self.provider_config.pitch,
                 "volume": self.provider_config.volume,
                 "device": self.provider_config.device,
+                "microphone": self.provider_config.microphone_device or "default",
+                "sample_rate": self.provider_config.sample_rate,
+                "capture_seconds": self.provider_config.capture_seconds,
             },
+            "voice_diagnostics": self.diagnostics.to_dict(),
         }
 
     def gate_status(self) -> dict[str, Any]:
@@ -667,6 +885,7 @@ class VoiceSession:
         payload = {
             "voice": self.status.to_dict(),
             "wake": self.wake_status.to_dict(),
+            "voice_diagnostics": self.diagnostics.to_dict(),
             "history": [item.to_dict() for item in self.history],
         }
         if extra:
@@ -678,21 +897,51 @@ class VoiceSession:
         if len(self.history) > self.history_limit:
             self.history = self.history[-self.history_limit :]
 
+    def _update_diagnostics(
+        self,
+        payload: dict[str, Any],
+        result: STTResult | None,
+        *,
+        status: str,
+        detail: str,
+        audio: dict[str, Any] | None = None,
+    ) -> None:
+        audio = audio or analyze_audio_payload(payload)
+        self.diagnostics = AudioDiagnostics(
+            active_microphone=str(payload.get("microphone") or self.provider_config.microphone_device or "browser/default"),
+            capture_provider=self.capture.name,
+            stt_provider=self.stt.name,
+            stt_model_path=str(self.provider_config.stt_model_path) if self.provider_config.stt_model_path else None,
+            last_transcript=result.text if result else "",
+            confidence=result.confidence if result else 0.0,
+            audio_duration_ms=int(audio.get("audio_duration_ms", 0)),
+            speech_duration_ms=int(audio.get("speech_ms", 0)),
+            audio_energy=float(audio.get("audio_energy", 0.0)),
+            rejected=bool(audio.get("rejected", False)),
+            noisy=bool(audio.get("noisy", False)),
+            status=status,
+            detail=detail,
+        )
+
 
 def build_voice_session(config: Any | None = None) -> VoiceSession:
     provider_config = VoiceProviderConfig.from_config(config) if config is not None else VoiceProviderConfig()
     wake_config = WakeGateConfig.from_config(config) if config is not None else WakeGateConfig()
     requested_stt = _create_stt_provider(provider_config)
     requested_tts = _create_tts_provider(provider_config)
+    requested_capture = _create_capture_provider(provider_config)
     configured_wake, wake = build_wake_provider(wake_config)
     configured_vad, vad = build_vad_provider(wake_config)
     stt = requested_stt if _health(requested_stt, kind="stt", configured=True, active=False).available else BrowserTranscriptSTT()
     tts = requested_tts if _health(requested_tts, kind="tts", configured=True, active=False).available else BrowserSpeechTTS()
+    capture = requested_capture if _health(requested_capture, kind="capture", configured=True, active=False).available else BrowserMicrophoneCapture()
     return VoiceSession(
         stt=stt,
         tts=tts,
+        capture=capture,
         configured_stt=requested_stt,
         configured_tts=requested_tts,
+        configured_capture=requested_capture,
         wake=wake,
         vad=vad,
         configured_wake=configured_wake,
@@ -700,6 +949,21 @@ def build_voice_session(config: Any | None = None) -> VoiceSession:
         provider_config=provider_config,
         wake_config=wake_config,
     )
+
+
+def clean_transcript(text: str) -> str:
+    value = strip_wake_word(text)
+    value = re.sub(r"\b(?:uh+|um+|erm|hmm)\b[\s,.-]*", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"^(?:please\s+|can\s+you\s+|could\s+you\s+)", "", value, flags=re.IGNORECASE)
+    value = re.sub(
+        r"^(?:bye|by)\s+(?=(?:play|open|launch|start|bring|search|create|write|type|jot|set)\b)",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = _dedupe_repeated_words(value)
+    value = re.sub(r"\s+", " ", value).strip(" .!?\"'")
+    return value
 
 
 def strip_wake_word(text: str) -> str:
@@ -710,6 +974,83 @@ def strip_wake_word(text: str) -> str:
 
 def normalize_confirmation(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip().lower())
+
+
+def _payload_confidence(payload: dict[str, Any], *, default: float) -> float:
+    raw = payload.get("confidence")
+    try:
+        confidence = float(raw)
+    except (TypeError, ValueError):
+        return max(0.0, min(1.0, default))
+    return max(0.0, min(1.0, confidence))
+
+
+def _looks_like_empty_audio(payload: dict[str, Any]) -> bool:
+    if payload.get("transcript") or payload.get("text"):
+        return False
+    speech_ms = payload.get("speech_ms")
+    try:
+        if speech_ms is not None and float(speech_ms) < MIN_SPEECH_MS:
+            return True
+    except (TypeError, ValueError):
+        pass
+    audio_energy = payload.get("audio_energy")
+    try:
+        if audio_energy is not None and float(audio_energy) <= 0.01:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
+def analyze_audio_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    duration_ms = _int_payload(payload, "audio_duration_ms", fallback=_duration_from_seconds(payload))
+    speech_ms = _int_payload(payload, "speech_ms", fallback=duration_ms if payload.get("transcript") or payload.get("text") else 0)
+    energy = _float_payload(payload, "audio_energy", fallback=0.0)
+    noisy = bool(payload.get("noisy", False))
+    rejected = False
+    reason = ""
+    if not (payload.get("transcript") or payload.get("text") or payload.get("audio_path")):
+        if duration_ms and duration_ms < MIN_SPEECH_MS:
+            rejected = True
+            reason = "Audio was too short to transcribe."
+        elif speech_ms and speech_ms < MIN_SPEECH_MS:
+            rejected = True
+            reason = "Speech segment was too short."
+        elif energy and energy <= 0.01:
+            rejected = True
+            reason = "Audio energy was too low."
+    if noisy:
+        rejected = True
+        reason = reason or "Audio was marked as noisy."
+    return {
+        "audio_duration_ms": duration_ms,
+        "speech_ms": speech_ms,
+        "audio_energy": round(energy, 6),
+        "noisy": noisy,
+        "rejected": rejected,
+        "reason": reason,
+    }
+
+
+def _needs_clarification(result: STTResult) -> bool:
+    if normalize_confirmation(result.text) in CONFIRMATION_PHRASES:
+        return False
+    if result.confidence < LOW_CONFIDENCE_THRESHOLD:
+        return True
+    words = result.text.split()
+    if len(words) == 1 and result.confidence < 0.72 and words[0].lower() not in {"hi", "hello", "thanks", "help"}:
+        return True
+    return False
+
+
+def clarification_response(text: str) -> str:
+    lowered = text.lower()
+    if any(word in lowered for word in ("spotify", "song", "music", "play")):
+        return "I did not catch that music request clearly. Say the song or playlist once more, or type it and I will take it from there."
+    if any(word in lowered for word in ("delete", "remove", "close", "clear")):
+        return "I am not fully sure about that request, and it may affect something important. Please repeat it clearly or type it once."
+    return "I did not catch that clearly enough. Please say it once more, or type it so I can handle the right task."
 
 
 def response_for_task(task: dict[str, Any] | None, fallback: str | None = None) -> str:
@@ -750,7 +1091,7 @@ def first_result(task: dict[str, Any] | None) -> str | None:
 def _create_stt_provider(config: VoiceProviderConfig) -> STTProvider:
     provider = config.stt_provider
     if provider == "faster_whisper":
-        return FasterWhisperSTT(config.stt_model_path, device=config.device)
+        return FasterWhisperSTT(config.stt_model_path, model_name=config.stt_model, device=config.device)
     if provider == "whisper_cpp":
         return WhisperCppSTT(config.stt_model_path, device=config.device)
     if provider == "browser":
@@ -777,6 +1118,19 @@ def _create_tts_provider(config: VoiceProviderConfig) -> TTSProvider:
     return BrowserSpeechTTS()
 
 
+def _create_capture_provider(config: VoiceProviderConfig) -> MicrophoneCaptureProvider:
+    provider = "browser" if config.capture_provider in {"", "browser"} else config.capture_provider
+    if provider == "sounddevice":
+        return SoundDeviceMicrophoneCapture(
+            sample_rate=config.sample_rate,
+            default_seconds=config.capture_seconds,
+            device=config.microphone_device,
+        )
+    if provider == "mock":
+        return MockMicrophoneCapture()
+    return BrowserMicrophoneCapture()
+
+
 def _health(provider: Any, *, kind: str, configured: bool, active: bool) -> ProviderHealth:
     if hasattr(provider, "health"):
         health = provider.health()
@@ -792,3 +1146,47 @@ def _payload_audio_path(payload: dict[str, Any]) -> Path | None:
         return None
     path = Path(str(raw)).expanduser()
     return path if path.exists() and path.is_file() else None
+
+
+def _duration_from_seconds(payload: dict[str, Any]) -> int:
+    try:
+        return int(float(payload.get("duration_seconds", 0)) * 1000)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _int_payload(payload: dict[str, Any], key: str, *, fallback: int = 0) -> int:
+    try:
+        return max(0, int(float(payload.get(key, fallback) or 0)))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _float_payload(payload: dict[str, Any], key: str, *, fallback: float = 0.0) -> float:
+    try:
+        return max(0.0, float(payload.get(key, fallback) or 0.0))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _dedupe_repeated_words(value: str) -> str:
+    words = value.split()
+    kept: list[str] = []
+    for word in words:
+        if kept and kept[-1].lower().strip(".,!?") == word.lower().strip(".,!?"):
+            continue
+        kept.append(word)
+    return " ".join(kept)
+
+
+def _pcm16_energy(raw: bytes) -> float:
+    if not raw:
+        return 0.0
+    sample_count = len(raw) // 2
+    if sample_count <= 0:
+        return 0.0
+    total = 0.0
+    for index in range(0, len(raw) - 1, 2):
+        sample = int.from_bytes(raw[index : index + 2], byteorder="little", signed=True)
+        total += (sample / 32768.0) ** 2
+    return min(1.0, (total / sample_count) ** 0.5)

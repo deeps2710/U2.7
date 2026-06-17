@@ -7,6 +7,7 @@ from .models import RiskLevel, ToolCall, ToolSpec, ValidationResult
 
 TOOL_SPECS: dict[str, ToolSpec] = {
     "append_to_note": ToolSpec("append_to_note", "Append text to an existing note.", RiskLevel.LOW, ("title", "content")),
+    "assistant_reply": ToolSpec("assistant_reply", "Reply conversationally without executing an OS action.", RiskLevel.NONE, ("message",)),
     "ask_clarification": ToolSpec("ask_clarification", "Ask the user for missing information.", RiskLevel.NONE, ("question",)),
     "check_calendar": ToolSpec("check_calendar", "Check calendar events for a date.", RiskLevel.LOW, ("date",)),
     "close_application": ToolSpec("close_application", "Close an application.", RiskLevel.MEDIUM, ("app",)),

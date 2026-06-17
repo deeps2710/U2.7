@@ -8,11 +8,16 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
-from .brain import UltronBrain
+from .audit import append_audit_record, read_recent_audit_records
+from .brain import TaskState, UltronBrain
 from .config import load_config
+from .conversation import ConversationManager
+from .diagnostics import PHASE13_VERSION, build_diagnostics
+from .knowledge import KnowledgeBase
 from .runtime import RuntimeSettings, UltronAssistant
+from .skills import SkillRegistry
 from .voice import VoiceSession, build_voice_session
 
 
@@ -20,14 +25,49 @@ ROOT = Path(__file__).resolve().parents[2]
 WEB_ROOT = ROOT / "web"
 
 
+@dataclass(frozen=True)
+class TaskPlanProxy:
+    payload: dict[str, Any]
+
+    @property
+    def status(self) -> str:
+        return str(self.payload.get("status", "completed"))
+
+    @property
+    def summary(self) -> str:
+        return str(self.payload.get("summary") or "")
+
+
+def _task_from_payload(payload: dict[str, Any] | None) -> TaskPlanProxy:
+    task = payload.get("task") if isinstance(payload, dict) else None
+    return TaskPlanProxy(task if isinstance(task, dict) else {})
+
+
 @dataclass
 class WebState:
     brain: UltronBrain
+    knowledge: KnowledgeBase | None = None
+    skills: SkillRegistry | None = None
+    conversation: ConversationManager | None = None
     voice: VoiceSession = field(default_factory=VoiceSession)
     visual_state: str = "idle"
     subtitles_enabled: bool = True
     last_subtitle: str = "ULTRON 2.7 online."
     last_task: dict[str, Any] | None = None
+    recent_tasks: list[dict[str, Any]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        settings = self.brain.assistant.settings
+        if self.conversation is None:
+            self.conversation = ConversationManager(self.brain)
+        if self.knowledge is None:
+            self.knowledge = KnowledgeBase(
+                settings.workspace / ".ultron" / "knowledge" / "index.json",
+                workspace=settings.workspace,
+                safe_roots=settings.safe_roots,
+            )
+        if self.skills is None:
+            self.skills = SkillRegistry.with_builtins(self.brain.assistant, self.knowledge)
 
     def command(self, text: str, *, confirmed: bool = False, mode: str = "do") -> dict[str, Any]:
         command = text.strip()
@@ -40,17 +80,45 @@ class WebState:
         lowered = command.lower()
         if lowered.startswith("/plan "):
             task = self.brain.plan(command[6:].strip())
+            conversation_payload = None
         elif lowered.startswith("/do "):
-            task = self.brain.execute(command[4:].strip(), confirmed=confirmed)
+            conversation_payload = self.conversation.handle(command[4:].strip(), confirmed=confirmed) if self.conversation else None
+            task = _task_from_payload(conversation_payload)
         elif mode == "plan":
             task = self.brain.plan(command)
+            conversation_payload = None
         else:
-            task = self.brain.execute(command, confirmed=confirmed)
+            conversation_payload = self.conversation.handle(command, confirmed=confirmed) if self.conversation else None
+            task = _task_from_payload(conversation_payload)
 
-        self.last_task = task.to_dict()
-        self.last_subtitle = task.summary or f"Task {task.status.value}."
-        self.visual_state = "speaking"
-        return self.snapshot({"status": "ok", "task": self.last_task, "subtitle": self.last_subtitle})
+        if task is not None and isinstance(task, TaskPlanProxy):
+            self.last_task = task.payload
+            task_status = task.status
+            summary = task.summary
+        else:
+            self.last_task = task.to_dict()
+            task_status = task.status.value
+            summary = task.summary
+        self._remember_task(self.last_task)
+        self.last_subtitle = (
+            str(conversation_payload.get("response") or conversation_payload.get("subtitle"))
+            if isinstance(conversation_payload, dict)
+            else summary or f"Task {task_status}."
+        )
+        self.visual_state = "listening" if task_status == TaskState.WAITING_FOR_CONFIRMATION.value else "speaking"
+        extra = {"status": "ok", "task": self.last_task, "subtitle": self.last_subtitle}
+        if isinstance(conversation_payload, dict):
+            extra.update(
+                {
+                    "route": conversation_payload.get("route"),
+                    "understood": conversation_payload.get("understood"),
+                    "response": conversation_payload.get("response"),
+                    "conversation": conversation_payload.get("conversation"),
+                    "conversation_history": conversation_payload.get("conversation_history"),
+                    "memory_enabled": conversation_payload.get("memory_enabled"),
+                }
+            )
+        return self.snapshot(extra)
 
     def voice_start(self, *, push_to_talk: bool | None = None) -> dict[str, Any]:
         self.visual_state = "listening"
@@ -64,15 +132,49 @@ class WebState:
     def voice_transcribe(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.visual_state = "thinking"
         voice_payload = self.voice.transcribe_and_run(payload, lambda goal, confirmed=False: self.command(goal, confirmed=confirmed))
+        return self._voice_response_snapshot(voice_payload)
+
+    def voice_capture(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.visual_state = "listening"
+        voice_payload = self.voice.capture_and_run(payload, lambda goal, confirmed=False: self.command(goal, confirmed=confirmed))
+        return self._voice_response_snapshot(voice_payload)
+
+    def _voice_response_snapshot(self, voice_payload: dict[str, Any]) -> dict[str, Any]:
         if voice_payload.get("status") == "empty":
             self.last_subtitle = str(voice_payload.get("message", "No speech was detected."))
             self.visual_state = "listening"
             return self.snapshot(voice_payload)
-        user_line = voice_payload.get("record", {}).get("user_said", "")
+        if voice_payload.get("status") == "capture_unavailable":
+            self.last_subtitle = str(voice_payload.get("message", "Backend microphone capture is unavailable."))
+            self.visual_state = "listening"
+            return self.snapshot(voice_payload)
+        record = voice_payload.get("record", {})
         spoken = str(voice_payload.get("spoken_response", self.last_subtitle))
-        self.last_subtitle = f"You: {user_line}\nULTRON: {spoken}"
+        self.last_subtitle = spoken
         self.visual_state = "speaking" if not self.voice.status.muted else "idle"
-        return self.snapshot({**voice_payload, "subtitle": self.last_subtitle})
+        return self.snapshot({**voice_payload, "subtitle": self.last_subtitle, "voice_record": record})
+
+    def memory_status(self) -> dict[str, Any]:
+        if self.conversation is None:
+            return {"status": "ok", "enabled": True, "memory": self.brain.memory.list()}
+        snapshot = self.conversation.memory_snapshot()
+        return self.snapshot({"status": "ok", "enabled": snapshot["enabled"], "memory": snapshot["items"]})
+
+    def memory_forget(self, query: str) -> dict[str, Any]:
+        if self.conversation is None:
+            removed = self.brain.memory.forget(query)
+            return self.snapshot({"status": "ok", "removed": removed, "memory": self.brain.memory.list()})
+        snapshot = self.conversation.forget_memory(query)
+        self.last_subtitle = f"Forgot {snapshot['removed']} matching memory item(s)." if snapshot["removed"] else "No matching memory item found."
+        return self.snapshot({"status": "ok", "enabled": snapshot["enabled"], "removed": snapshot["removed"], "memory": snapshot["items"]})
+
+    def memory_toggle(self, enabled: bool) -> dict[str, Any]:
+        if self.conversation is None:
+            self.brain.memory.remember("memory_enabled", str(bool(enabled)).lower(), kind="control")
+            return self.snapshot({"status": "ok", "enabled": bool(enabled), "memory": self.brain.memory.list()})
+        snapshot = self.conversation.set_memory_enabled(bool(enabled))
+        self.last_subtitle = "Memory is now on." if snapshot["enabled"] else "Memory is now off."
+        return self.snapshot({"status": "ok", "enabled": snapshot["enabled"], "memory": snapshot["items"]})
 
     def wake_start(self) -> dict[str, Any]:
         self.visual_state = "waiting_for_wake_word"
@@ -102,11 +204,11 @@ class WebState:
             self.visual_state = "listening"
             return self.snapshot(wake_payload)
         if wake_payload.get("command_executed"):
-            user_line = wake_payload.get("record", {}).get("user_said", "")
+            record = wake_payload.get("record", {})
             spoken = str(wake_payload.get("spoken_response", self.last_subtitle))
-            self.last_subtitle = f"You: {user_line}\nULTRON: {spoken}"
+            self.last_subtitle = spoken
             self.visual_state = "speaking" if not self.voice.status.muted else "waiting_for_wake_word"
-            return self.snapshot({**wake_payload, "subtitle": self.last_subtitle})
+            return self.snapshot({**wake_payload, "subtitle": self.last_subtitle, "voice_record": record})
         self.visual_state = "waiting_for_wake_word"
         return self.snapshot(wake_payload)
 
@@ -115,6 +217,41 @@ class WebState:
 
     def voice_providers(self) -> dict[str, Any]:
         return self.snapshot({"status": "ok", **self.voice.providers_status()})
+
+    def audit_recent(self, *, limit: int = 25) -> dict[str, Any]:
+        audit_log = self.brain.assistant.settings.audit_log
+        return self.snapshot({"status": "ok", "audit_log": str(audit_log), "records": read_recent_audit_records(audit_log, limit=limit)})
+
+    def diagnostics(self) -> dict[str, Any]:
+        return build_diagnostics(self)
+
+    def skills_list(self) -> dict[str, Any]:
+        return self.snapshot({"status": "ok", "skills": self.skills.list() if self.skills else []})
+
+    def skills_run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self.skills is None:
+            return self.snapshot({"status": "error", "message": "Skill registry is unavailable."})
+        name = str(payload.get("name") or payload.get("skill") or "")
+        skill_input = payload.get("input") if isinstance(payload.get("input"), dict) else {}
+        result = self.skills.run(name, skill_input, confirmed=bool(payload.get("confirmed", False)))
+        self.last_subtitle = str(result.get("result", {}).get("message") or result.get("message") or "Skill run completed.")
+        self.visual_state = "speaking" if result.get("status") not in {"blocked", "confirmation_required"} else "listening"
+        return self.snapshot(result)
+
+    def knowledge_ingest(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self.knowledge is None:
+            return self.snapshot({"status": "error", "message": "Knowledge base is unavailable."})
+        result = self.knowledge.ingest(str(payload.get("path") or ""))
+        self._audit_knowledge("knowledge_ingest", result)
+        self.last_subtitle = str(result.get("message", "Knowledge ingest completed."))
+        return self.snapshot({"status": result.get("status", "ok"), "knowledge": result, "sources": self.knowledge.sources()})
+
+    def knowledge_search(self, query: str, *, limit: int = 5) -> dict[str, Any]:
+        if self.knowledge is None:
+            return self.snapshot({"status": "error", "message": "Knowledge base is unavailable."})
+        result = self.knowledge.search(query, limit=limit)
+        self._audit_knowledge("knowledge_search", {"query": query, "limit": limit, "match_count": len(result.get("matches", []))})
+        return self.snapshot({"status": result.get("status", "ok"), "knowledge": result})
 
     def voice_test_stt(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.snapshot(self.voice.test_stt(payload))
@@ -135,6 +272,11 @@ class WebState:
         self.visual_state = "speaking" if speech.get("voice", {}).get("speaking") else self.visual_state
         return self.snapshot(speech)
 
+    def cancel_confirmation(self) -> dict[str, Any]:
+        self.visual_state = "listening" if self.voice.status.microphone_enabled else "idle"
+        self.last_subtitle = "Action cancelled."
+        return self.snapshot(self.voice.cancel_confirmation())
+
     def toggle_subtitles(self, enabled: bool | None = None) -> dict[str, Any]:
         self.subtitles_enabled = not self.subtitles_enabled if enabled is None else bool(enabled)
         return self.snapshot({"status": "ok", "subtitles_enabled": self.subtitles_enabled})
@@ -151,10 +293,32 @@ class WebState:
             "subtitles_enabled": self.subtitles_enabled,
             "last_subtitle": self.last_subtitle,
             "last_task": self.last_task,
+            "recent_tasks": self.recent_tasks[-8:],
+            "knowledge_sources": self.knowledge.sources() if self.knowledge else [],
+            "memory_enabled": self.conversation.memory_enabled if self.conversation else True,
+            "conversation_history": [item.to_dict() for item in self.conversation.turns[-10:]] if self.conversation else [],
         }
         if extra:
             payload.update(extra)
         return payload
+
+    def _remember_task(self, task: dict[str, Any]) -> None:
+        self.recent_tasks.append(
+            {
+                "task_id": task.get("task_id"),
+                "goal": task.get("original_goal"),
+                "status": task.get("status"),
+                "summary": task.get("summary"),
+                "created_at": task.get("created_at"),
+            }
+        )
+        self.recent_tasks = self.recent_tasks[-20:]
+
+    def _audit_knowledge(self, record_type: str, payload: dict[str, Any]) -> None:
+        settings = self.brain.assistant.settings
+        if not settings.write_audit:
+            return
+        append_audit_record({"record_type": record_type, **payload}, settings.audit_log)
 
 
 def build_state(args: argparse.Namespace) -> WebState:
@@ -175,20 +339,46 @@ def build_state(args: argparse.Namespace) -> WebState:
         llm_model=args.llm_model,
         llm_endpoint=args.llm_endpoint,
     )
-    return WebState(UltronBrain(UltronAssistant(settings)), voice=build_voice_session(config))
+    assistant = UltronAssistant(settings)
+    knowledge = KnowledgeBase(
+        settings.workspace / ".ultron" / "knowledge" / "index.json",
+        workspace=settings.workspace,
+        safe_roots=settings.safe_roots,
+    )
+    return WebState(
+        UltronBrain(assistant),
+        knowledge=knowledge,
+        skills=SkillRegistry.with_builtins(assistant, knowledge),
+        voice=build_voice_session(config),
+    )
 
 
 def make_handler(state: WebState, web_root: Path = WEB_ROOT) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
-        server_version = "UltronPhase10/1.0"
+        server_version = PHASE13_VERSION
 
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
             if parsed.path == "/api/status":
                 self._json(state.snapshot({"status": "ok"}))
                 return
+            if parsed.path == "/api/diagnostics":
+                self._json(state.diagnostics())
+                return
             if parsed.path == "/api/memory":
-                self._json({"status": "ok", "memory": state.brain.memory.list()})
+                self._json(state.memory_status())
+                return
+            if parsed.path == "/api/skills":
+                self._json(state.skills_list())
+                return
+            if parsed.path == "/api/knowledge/search":
+                query = parse_qs(parsed.query)
+                search = str((query.get("query") or query.get("q") or [""])[0])
+                try:
+                    limit = int((query.get("limit") or ["5"])[0])
+                except ValueError:
+                    limit = 5
+                self._json(state.knowledge_search(search, limit=max(1, min(limit, 25))))
                 return
             if parsed.path == "/api/voice/status":
                 self._json(state.voice_status())
@@ -199,6 +389,14 @@ def make_handler(state: WebState, web_root: Path = WEB_ROOT) -> type[BaseHTTPReq
             if parsed.path == "/api/wake/status":
                 self._json(state.wake_status())
                 return
+            if parsed.path == "/api/audit/recent":
+                query = parse_qs(parsed.query)
+                try:
+                    limit = int((query.get("limit") or ["25"])[0])
+                except ValueError:
+                    limit = 25
+                self._json(state.audit_recent(limit=max(1, min(limit, 100))))
+                return
             self._serve_static(parsed.path)
 
         def do_POST(self) -> None:  # noqa: N802
@@ -206,6 +404,18 @@ def make_handler(state: WebState, web_root: Path = WEB_ROOT) -> type[BaseHTTPReq
             body = self._read_json()
             if parsed.path == "/api/command":
                 self._json(state.command(str(body.get("command", "")), confirmed=bool(body.get("confirmed", False)), mode=str(body.get("mode", "do"))))
+                return
+            if parsed.path == "/api/skills/run":
+                self._json(state.skills_run(body))
+                return
+            if parsed.path == "/api/knowledge/ingest":
+                self._json(state.knowledge_ingest(body))
+                return
+            if parsed.path == "/api/memory/forget":
+                self._json(state.memory_forget(str(body.get("query") or body.get("key") or "")))
+                return
+            if parsed.path == "/api/memory/toggle":
+                self._json(state.memory_toggle(bool(body.get("enabled", True))))
                 return
             if parsed.path == "/api/voice/start":
                 push_to_talk = body.get("push_to_talk")
@@ -216,6 +426,9 @@ def make_handler(state: WebState, web_root: Path = WEB_ROOT) -> type[BaseHTTPReq
                 return
             if parsed.path == "/api/voice/transcribe":
                 self._json(state.voice_transcribe(body))
+                return
+            if parsed.path == "/api/voice/capture":
+                self._json(state.voice_capture(body))
                 return
             if parsed.path == "/api/voice/test-stt":
                 self._json(state.voice_test_stt(body))
@@ -234,6 +447,9 @@ def make_handler(state: WebState, web_root: Path = WEB_ROOT) -> type[BaseHTTPReq
                 return
             if parsed.path == "/api/speak":
                 self._json(state.speak(body))
+                return
+            if parsed.path == "/api/confirmation/cancel":
+                self._json(state.cancel_confirmation())
                 return
             if parsed.path == "/api/subtitles/toggle":
                 enabled = body.get("enabled")
@@ -266,7 +482,12 @@ def make_handler(state: WebState, web_root: Path = WEB_ROOT) -> type[BaseHTTPReq
             self.wfile.write(data)
 
         def _serve_static(self, request_path: str) -> None:
-            relative = "index.html" if request_path in {"", "/"} else request_path.lstrip("/")
+            if request_path in {"", "/"}:
+                relative = "index.html"
+            elif request_path == "/diagnostics":
+                relative = "diagnostics.html"
+            else:
+                relative = request_path.lstrip("/")
             path = (web_root / relative).resolve()
             try:
                 path.relative_to(web_root.resolve())

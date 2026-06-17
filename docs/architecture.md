@@ -45,6 +45,15 @@ web UI -> local API -> brain -> TaskPlan -> safe runtime step(s)
 
 The browser interface can change visual state, send typed commands, show subtitles, and inspect memory through typed API endpoints. It is not an execution authority. Command execution still flows through the brain and the existing safe runtime.
 
+The conversation manager sits between typed/voice input and the brain:
+
+```text
+user input/voice -> conversation manager -> fast intent router
+-> chat/memory response or brain/runtime command
+```
+
+Simple chat, help, thanks, and memory-control messages are handled quickly through the allowlisted `assistant_reply` path. Commands that operate on the laptop still enter the brain/runtime pipeline and cannot bypass typed tool validation, policy gates, executor restrictions, or audit logging.
+
 Phase 8 adds voice adapters around the visual interface:
 
 ```text
@@ -73,6 +82,50 @@ candidate audio/text -> wake-word provider -> VAD provider -> STT
 
 Wake word and VAD providers are input gates only. They can allow, delay, or ignore a speech segment, but they cannot create tasks or run tools.
 
+Phase 14 adds backend microphone capture and richer voice diagnostics:
+
+```text
+backend/browser/mock microphone -> audio diagnostics -> STT
+-> conversation manager -> brain/runtime -> typed tool call
+```
+
+Capture providers can record or supply audio/transcript payloads, but they cannot execute tasks. Empty, noisy, or too-short audio is rejected before command execution. Low-confidence transcripts become clarification prompts.
+
+Phase 15 adds semantic local-LLM intent routing through Ollama:
+
+```text
+fast rules -> optional semantic router -> typed JSON tool proposal
+-> schema validation -> policy -> executor
+```
+
+The semantic router is untrusted. It can only propose one allowlisted JSON tool call or `ask_clarification`. Unknown tools, malformed JSON, invalid arguments, and low confidence are rejected before execution.
+
+Phase 11 adds a Windows executor adapter pack behind the same policy gate:
+
+```text
+typed tool call -> schema validation -> policy decision
+-> Windows automation adapter -> audit record
+```
+
+The Windows adapter can open approved apps, operate on files inside safe roots, use typed clipboard/screenshot helpers, and optionally use local volume/brightness packages. It does not accept raw shell commands.
+
+Phase 12 adds skills and local knowledge above the same safety model:
+
+```text
+skill input -> skill schema validation -> skill policy gate
+-> typed tool call when needed -> validation -> policy -> executor
+```
+
+Knowledge retrieval can supply context and summaries, but it cannot run tools or override policy decisions.
+
+Phase 13 adds beta prototype operations around the same local server:
+
+```text
+setup/check/launcher/demo/verify -> local API -> existing safe runtime
+```
+
+The diagnostics page is read-only. It reports readiness, paths, providers, safe roots, and recent errors, but it does not execute tools.
+
 ## Core Principles
 
 - Local-first by default.
@@ -80,15 +133,22 @@ Wake word and VAD providers are input gates only. They can allow, delay, or igno
 - High-risk actions require confirmation.
 - Destructive actions are previewed, not blindly executed.
 - Every decision is logged for evaluation and improvement.
-- Voice and LLM components are adapters around the same safe tool layer.
+- Conversation, voice, and LLM components are adapters around the same safe tool layer.
 - Real execution is limited to low-risk, allowlisted tools.
 - File tools are restricted to configured safe roots.
 - LLM output is treated as untrusted input until it passes schema validation and policy.
 - The brain is orchestration only; it does not receive raw shell access.
 - Persistent memory rejects obvious sensitive content such as passwords, API keys, tokens, credentials, and secrets.
+- Personalization memory can be viewed, forgotten, or disabled by the user.
 - Voice mode requires explicit confirmation phrases for high-risk actions.
 - Voice providers must fail closed into typed/browser fallback rather than crashing or bypassing the runtime.
 - Wake/VAD providers must ignore random background speech, empty input, and noisy segments before STT or the brain sees them.
+- Backend microphone capture is input only; it cannot run tools or bypass the conversation manager.
+- Semantic LLM routing is proposal only; typed schema validation, policy, executor, and audit remain authoritative.
+- Windows automation must use typed adapters, app aliases, safe roots, confirmation gates, and audit logs.
+- Skills must be schema-validated, policy-gated, auditable, and unable to bypass the typed tool runtime.
+- Knowledge retrieval is context only and never execution authority.
+- Setup, diagnostics, demo, and verification tooling must not introduce a raw execution side channel.
 
 ## Risk Levels
 
@@ -96,7 +156,7 @@ Wake word and VAD providers are input gates only. They can allow, delay, or igno
 |---|---|---|
 | none | clarification, unsupported request | no execution |
 | low | open app, set volume, search files | allowed after validation |
-| medium | draft email, move file, smart-home control | confirmation when configured |
+| medium | terminal launch, draft email, move file, smart-home control | confirmation required |
 | high | delete file, send email, run script, shutdown | confirmation required |
 | blocked | arbitrary shell, credential access | rejected |
 
@@ -136,6 +196,8 @@ The visual interface is a client of the local API in `src/ultron27/web_server.py
 - `POST /api/command` for typed commands,
 - `GET /api/status` for current visual/runtime state,
 - `GET /api/memory` for non-sensitive memory inspection,
+- `POST /api/memory/forget` for deleting matching memory entries,
+- `POST /api/memory/toggle` for turning personalization memory on or off,
 - `POST /api/subtitles/toggle` for subtitle visibility,
 - `POST /api/state` for development-only visual state testing.
 
@@ -148,7 +210,7 @@ The frontend lives under `web/` and uses Three.js for the animated green plasma 
 | thinking | orbiting green eclipse rings and active particles | a command is being planned or executed |
 | speaking | expanded glow and crawling plasma arcs | ULTRON is presenting the result |
 
-The UI never receives raw shell access and does not run tools directly. `/api/command` sends the user goal to `UltronBrain`, which routes each step through the planner, validator, policy gate, executor, and audit log.
+The UI never receives raw shell access and does not run tools directly. `/api/command` sends the user text through `ConversationManager`; real commands continue to `UltronBrain`, which routes each step through the planner, validator, policy gate, executor, and audit log.
 
 ## Phase 8 Voice Boundary
 
@@ -160,7 +222,7 @@ Voice support lives in `src/ultron27/voice.py` and the web API routes in `src/ul
 - mute and stop-speaking state,
 - explicit confirmation phrase handling.
 
-The browser can use its built-in speech recognition as a capture adapter. The backend accepts a transcript through `POST /api/voice/transcribe`, strips the wake word, and sends the resulting goal through `UltronBrain`.
+The browser can use its built-in speech recognition as a capture adapter. The backend accepts a transcript through `POST /api/voice/transcribe`, strips the wake word, trims filler text, rejects empty/noisy inputs, and sends confident goals through `ConversationManager` and then the brain/runtime when a command is needed.
 
 Voice API endpoints:
 
@@ -169,10 +231,39 @@ Voice API endpoints:
 | `POST /api/voice/start` | Mark voice mode active and listening. |
 | `POST /api/voice/stop` | Stop listening. |
 | `POST /api/voice/transcribe` | Accept a transcript/audio-provider payload and process it safely. |
+| `POST /api/voice/capture` | Run configured backend/mock capture, then process through the same voice pipeline. |
 | `POST /api/speak` | Track or stop speech output. |
 | `GET /api/voice/status` | Return voice state and transcript history. |
 
 High-risk voice commands pause with `waiting_for_confirmation`. The confirmation phrase must be explicit, for example `yes confirm`. Confirmed destructive actions still remain dry-run or not implemented unless a safe executor is later designed.
+
+If an STT provider reports low confidence, ULTRON records the transcript and asks for clarification instead of executing. The UI history shows the raw user phrase, the cleaned understanding, and the assistant response.
+
+## Phase 14 Voice Diagnostics Boundary
+
+`VoiceSession` owns the backend capture provider, STT provider, transcript cleanup, audio diagnostics, and clarification gating. The diagnostics model records:
+
+- active microphone,
+- capture provider,
+- STT provider and model path,
+- last transcript,
+- confidence,
+- audio duration,
+- speech duration,
+- audio energy,
+- rejected/noisy status.
+
+These diagnostics are visible through `GET /api/voice/status`, `GET /api/voice/providers`, and voice command responses. They are observational only and do not grant execution authority.
+
+## Phase 15 Semantic Router Boundary
+
+The semantic router lives in `src/ultron27/llm.py`. It uses local Ollama only to propose structured JSON:
+
+```json
+{"intent":"open_app","tool_name":"open_application","tool_arguments":{"app":"notepad"},"confidence":0.92}
+```
+
+The runtime treats this output as untrusted. It must parse as JSON, match an allowlisted tool, pass schema validation, and pass policy. If the model is unavailable in `hybrid` mode, ULTRON continues with the rules/fallback plan. If the model is uncertain, it must use `ask_clarification` rather than invent an action.
 
 ## Phase 9 Offline Voice Provider Boundary
 
@@ -237,6 +328,97 @@ Wake API endpoints:
 | `POST /api/wake/process` | Browser adapter route for candidate speech segments. |
 
 `POST /api/wake/process` only calls STT and the brain after both gates pass. While the session is `waiting_for_wake_word`, speech without `ULTRON` or `Hey ULTRON` is ignored. Empty/noisy input is ignored before wake detection. Push-to-talk remains available through the Phase 8 `/api/voice/transcribe` route.
+
+## Phase 11 Windows Executor Boundary
+
+Phase 11 adds `src/ultron27/windows_executor.py` as an OS adapter behind `src/ultron27/executor.py`. The planner and LLM still only produce typed tool calls. The executor decides whether a supported OS adapter can run the call.
+
+Windows executor capabilities:
+
+| Capability | Boundary |
+|---|---|
+| Application launch | Only approved aliases are launchable. Unknown app names are blocked. |
+| File/folder open | Explicit paths outside `safe_roots` are blocked. Relative names are resolved inside `safe_roots`. |
+| File search | Searches only within `safe_roots`; unsafe explicit folders are blocked. |
+| Notes/reminders/timers | Writes under the workspace or `.ultron/`. |
+| Clipboard/screenshot | Typed helper adapters only, with dry-run support. |
+| Volume/brightness | Optional local provider packages; missing packages return `not_implemented`. |
+| Delete/move/rename/shutdown/restart/script/email | Confirmation-gated and intentionally not implemented as destructive behavior. |
+
+Phase 11 also exposes:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/audit/recent?limit=25` | Return recent audit records, newest first. |
+| `POST /api/confirmation/cancel` | Clear pending voice confirmation state after a UI cancel action. |
+
+The UI confirmation modal is a client-side affordance only. Confirming sends the original command back to the same `/api/command` route with `confirmed: true`; it does not run tools directly.
+
+## Phase 12 Skills and Knowledge Boundary
+
+Phase 12 adds `src/ultron27/skills.py` and `src/ultron27/knowledge.py`.
+
+Skill execution has two safety layers:
+
+| Layer | Responsibility |
+|---|---|
+| Skill schema | Validate the skill name, required inputs, input types, enums, and obvious sensitive content. |
+| Skill policy | Apply risk-level behavior before the handler runs. Medium and high-risk skills require confirmation. |
+| Tool runtime | For OS-facing actions, skills call `UltronAssistant.handle_tool_call()` so the existing tool validator, policy gate, executor, and audit log still run. |
+
+Built-in skills:
+
+| Skill | Runtime Behavior |
+|---|---|
+| `notes` | Calls `create_note` or `append_to_note` through the safe runtime. |
+| `reminders` | Calls `set_reminder` through the safe runtime. |
+| `file_search` | Calls `search_files` through the safe runtime. |
+| `project_summary` | Searches local knowledge and returns summaries only. |
+| `daily_planning` | Drafts a plan from user-provided priorities and local context only. |
+
+Knowledge base behavior:
+
+| Area | Rule |
+|---|---|
+| Source path | Must be inside configured `safe_roots`. |
+| Supported files | Markdown, TXT, PDF with `pypdf`, DOCX with `python-docx`. |
+| Storage | `.ultron/knowledge/index.json` with metadata and chunks. |
+| Privacy | Rejects obvious secrets such as passwords, tokens, API keys, credentials, and private keys. |
+| Retrieval | Keyword search first; embedding provider abstraction is present for later. |
+| Authority | Retrieved text can inform responses but cannot execute tasks or override policy. |
+
+Phase 12 endpoints:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/skills` | Return built-in skill metadata and schemas. |
+| `POST /api/skills/run` | Run a skill after skill schema validation and policy. |
+| `POST /api/knowledge/ingest` | Ingest a safe local document into the knowledge index. |
+| `GET /api/knowledge/search` | Search indexed knowledge chunks by keyword. |
+
+## Phase 13 Beta Operations Boundary
+
+Phase 13 adds setup and operations tooling without changing execution authority.
+
+Operator scripts:
+
+| Script | Purpose |
+|---|---|
+| `scripts/setup_ultron_windows.ps1` | Create a Windows virtual environment, install the package, write a safe config, and run dependency checks. |
+| `scripts/check_dependencies.py` | Check required repo files and report/knowledge Python packages. |
+| `scripts/check_providers.py` | Check configured STT/TTS/wake/VAD providers and fallback status. |
+| `scripts/config_wizard.py` | Write `ultron.config.json` interactively or with safe defaults. |
+| `scripts/launch_ultron.py` | Start backend and UI together, handle port conflicts, and print URLs. |
+| `scripts/demo_phase13.py` | Run typed, mock voice, note creation, and confirmation demos without a microphone. |
+| `scripts/verify_phase13.py` | Run unit tests, dataset evaluation, safety regression, and API smoke checks. |
+
+Diagnostics endpoint:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/diagnostics` | Return backend, brain, runtime path, voice provider, safe-root, knowledge, dependency, and recent-error readiness data. |
+
+Diagnostics data is informational. It cannot approve actions, run tools, bypass policy, or modify the workspace.
 
 ## Dataset Role
 

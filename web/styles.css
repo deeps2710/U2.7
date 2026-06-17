@@ -21,7 +21,8 @@ body {
   width: 100%;
   min-height: 100%;
   margin: 0;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: radial-gradient(circle at 50% 38%, #04160c 0%, var(--black) 52%, #000 100%);
   color: var(--text);
 }
@@ -50,7 +51,7 @@ body {
   z-index: 2;
   min-height: 100vh;
   display: grid;
-  grid-template-rows: auto minmax(220px, 1fr) auto auto auto auto auto auto;
+  grid-template-rows: auto minmax(440px, 46vh) auto auto auto auto auto auto;
   padding: 24px clamp(20px, 5vw, 72px) 22px;
 }
 
@@ -85,11 +86,14 @@ h1 {
 
 .status-strip,
 .voice-badge,
+.diagnostics-link,
 .subtitles,
 .voice-console,
 .provider-panel,
 .wake-panel,
+.voice-diagnostics,
 .command-row,
+.phase12-panel,
 .voice-history,
 .state-controls {
   border: 1px solid var(--border);
@@ -99,7 +103,8 @@ h1 {
 }
 
 .status-strip,
-.voice-badge {
+.voice-badge,
+.diagnostics-link {
   min-width: 132px;
   height: 34px;
   padding: 0 12px;
@@ -109,9 +114,14 @@ h1 {
   gap: 8px;
   font-size: 13px;
   color: var(--muted);
+  text-decoration: none;
 }
 
 .voice-badge {
+  min-width: 168px;
+}
+
+.diagnostics-link {
   min-width: 168px;
 }
 
@@ -124,7 +134,7 @@ h1 {
 }
 
 .stage {
-  min-height: 32vh;
+  min-height: 440px;
   display: grid;
   place-items: center;
 }
@@ -169,6 +179,7 @@ h1 {
 .provider-panel,
 .wake-panel,
 .command-row,
+.phase12-grid,
 .voice-history,
 .state-controls {
   width: min(900px, 100%);
@@ -177,17 +188,18 @@ h1 {
 
 .voice-console {
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-columns: repeat(8, minmax(0, 1fr));
 }
 
 .provider-panel {
   min-height: 64px;
   display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1.25fr) 104px 116px;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.1fr) minmax(0, 1.1fr) 104px 116px;
   align-items: stretch;
 }
 
-.provider-panel div {
+.provider-panel div,
+.voice-diagnostics div {
   min-width: 0;
   padding: 10px 14px;
   border-right: 1px solid rgba(0, 255, 102, 0.18);
@@ -242,9 +254,93 @@ h1 {
   font-weight: 600;
 }
 
+.voice-diagnostics {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+}
+
+.voice-diagnostics div:last-child {
+  border-right: 0;
+}
+
+.voice-diagnostics span,
+.voice-diagnostics small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.voice-diagnostics strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
 .command-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 100px;
+}
+
+.phase12-grid {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr 1fr;
+  gap: 10px;
+}
+
+.phase12-panel {
+  min-width: 0;
+  min-height: 138px;
+  max-height: 164px;
+  overflow: auto;
+  padding: 10px 12px;
+}
+
+.compact-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 7px;
+}
+
+.compact-list li {
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.32;
+}
+
+.compact-list span {
+  color: var(--muted);
+}
+
+.memory-controls,
+.knowledge-search {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 78px;
+  margin-bottom: 8px;
+  border: 1px solid rgba(0, 255, 102, 0.18);
+}
+
+.memory-controls {
+  grid-template-columns: 94px minmax(0, 1fr) 74px;
+}
+
+.knowledge-search input,
+.memory-controls input {
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  padding: 9px 10px;
+  background: transparent;
+  color: var(--text);
+}
+
+.knowledge-search button,
+.memory-controls button {
+  min-height: 36px;
 }
 
 input,
@@ -292,7 +388,7 @@ button[aria-pressed="true"],
 }
 
 .voice-history {
-  max-height: 118px;
+  max-height: 148px;
   overflow: auto;
   padding: 10px 14px;
 }
@@ -316,7 +412,7 @@ button[aria-pressed="true"],
 
 .state-controls {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   margin-bottom: 0;
 }
 
@@ -324,6 +420,183 @@ button[aria-pressed="true"],
   color: #041208;
   background: linear-gradient(90deg, var(--green), var(--lime));
   box-shadow: 0 0 22px rgba(0, 255, 102, 0.35);
+}
+
+.confirmation-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 6;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.58);
+  backdrop-filter: blur(5px);
+}
+
+.confirmation-modal[hidden] {
+  display: none;
+}
+
+.confirmation-dialog {
+  width: min(480px, 100%);
+  border: 1px solid rgba(166, 255, 63, 0.48);
+  background: rgba(2, 14, 8, 0.96);
+  box-shadow: 0 0 34px rgba(0, 255, 102, 0.2), inset 0 0 18px rgba(0, 255, 102, 0.08);
+  padding: 18px;
+}
+
+.confirmation-kicker {
+  color: var(--lime);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.confirmation-dialog h2 {
+  margin: 4px 0 0;
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+.confirmation-dialog p {
+  margin: 12px 0;
+  color: var(--text);
+  line-height: 1.42;
+}
+
+.confirmation-dialog dl {
+  margin: 0 0 14px;
+  display: grid;
+  gap: 8px;
+}
+
+.confirmation-dialog dl div {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr);
+  gap: 12px;
+}
+
+.confirmation-dialog dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.confirmation-dialog dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.confirmation-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.diagnostics-body {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 18% 12%, rgba(0, 255, 102, 0.09), transparent 28%),
+    radial-gradient(circle at 86% 22%, rgba(166, 255, 63, 0.06), transparent 24%),
+    #020503;
+}
+
+.diagnostics-shell {
+  position: relative;
+  z-index: 2;
+  width: min(1120px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 28px 0 40px;
+}
+
+.diagnostics-header,
+.diagnostics-banner,
+.diagnostics-card {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  box-shadow: 0 0 24px rgba(0, 255, 102, 0.08), inset 0 0 18px rgba(0, 255, 102, 0.05);
+  backdrop-filter: blur(10px);
+}
+
+.diagnostics-header {
+  min-height: 92px;
+  padding: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.diagnostics-nav {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.diagnostics-nav a {
+  min-height: 42px;
+  padding: 0 16px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(0, 255, 102, 0.28);
+  background: rgba(0, 255, 102, 0.08);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.diagnostics-banner {
+  margin: 14px 0;
+  padding: 14px 16px;
+  color: var(--text);
+}
+
+.diagnostics-banner[data-status="ready"] {
+  border-color: rgba(0, 255, 102, 0.55);
+}
+
+.diagnostics-banner[data-status="attention_needed"] {
+  border-color: rgba(166, 255, 63, 0.62);
+  color: var(--lime);
+}
+
+.diagnostics-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.diagnostics-card {
+  min-width: 0;
+  min-height: 230px;
+  padding: 16px;
+  overflow: auto;
+}
+
+.diagnostics-card h2 {
+  margin: 0 0 12px;
+  font-size: 16px;
+  color: var(--green-soft);
+}
+
+.diagnostics-card dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 108px minmax(0, 1fr);
+  gap: 8px 12px;
+}
+
+.diagnostics-card dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.diagnostics-card dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.35;
 }
 
 body.state-listening .status-dot {
@@ -355,7 +628,11 @@ body.state-speaking .status-dot {
   .shell {
     min-height: 100svh;
     padding: 18px 14px;
-    grid-template-rows: auto minmax(220px, 38vh) auto auto auto auto auto auto;
+    grid-template-rows: auto minmax(500px, 54vh) auto auto auto auto auto auto;
+  }
+
+  .stage {
+    min-height: 500px;
   }
 
   .topbar {
@@ -374,7 +651,8 @@ body.state-speaking .status-dot {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .wake-panel {
+  .wake-panel,
+  .voice-diagnostics {
     grid-template-columns: 1fr;
   }
 
@@ -382,7 +660,20 @@ body.state-speaking .status-dot {
     grid-template-columns: 1fr;
   }
 
+  .phase12-grid {
+    grid-template-columns: 1fr;
+  }
+
   .state-controls {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .diagnostics-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .diagnostics-grid {
+    grid-template-columns: 1fr;
   }
 }

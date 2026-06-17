@@ -56,6 +56,7 @@ class PolicyDecision:
     reason: str
     risk_level: RiskLevel
     requires_confirmation: bool
+    permission_level: str = ""
 
 
 @dataclass(frozen=True)
@@ -64,4 +65,3 @@ class ToolResult:
     message: str
     changed: dict[str, Any] = field(default_factory=dict)
     data: dict[str, Any] = field(default_factory=dict)
-

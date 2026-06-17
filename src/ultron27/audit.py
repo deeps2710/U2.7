@@ -23,6 +23,24 @@ def append_audit_record(record: dict[str, Any], path: Path = DEFAULT_AUDIT_LOG) 
         handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
 
 
+def read_recent_audit_records(path: Path = DEFAULT_AUDIT_LOG, *, limit: int = 25) -> list[dict[str, Any]]:
+    if limit < 1:
+        return []
+    if not path.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            records.append(payload)
+    return records[-limit:][::-1]
+
+
 def _jsonable(value: Any) -> Any:
     if is_dataclass(value):
         return _jsonable(asdict(value))

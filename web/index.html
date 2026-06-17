@@ -20,6 +20,7 @@
             <span id="statusDot" class="status-dot"></span>
             <span id="statusLabel">Idle</span>
           </div>
+          <a class="diagnostics-link" href="/diagnostics">Diagnostics</a>
           <div id="voiceBadge" class="voice-badge">Voice standby</div>
         </div>
       </header>
@@ -38,6 +39,7 @@
 
       <section class="voice-console" aria-label="Voice controls">
         <button id="micToggle" type="button">Mic On</button>
+        <button id="backendCaptureButton" type="button">Backend Mic</button>
         <button id="alwaysListeningToggle" type="button" aria-pressed="false">Always Off</button>
         <button id="pushToTalkToggle" type="button" aria-pressed="true">Push-to-talk</button>
         <button id="muteToggle" type="button" aria-pressed="false">Mute Off</button>
@@ -51,6 +53,11 @@
           <span>STT</span>
           <strong id="sttProviderLabel">text_payload</strong>
           <small id="sttProviderDetail">Ready</small>
+        </div>
+        <div>
+          <span>Capture</span>
+          <strong id="captureProviderLabel">browser</strong>
+          <small id="captureProviderDetail">Browser capture</small>
         </div>
         <div>
           <span>TTS</span>
@@ -79,13 +86,50 @@
         </div>
       </section>
 
+      <section class="voice-diagnostics" aria-label="Voice diagnostics">
+        <div>
+          <span>Understood</span>
+          <strong id="lastTranscriptLabel">None</strong>
+          <small id="confidenceDetail">Confidence pending</small>
+        </div>
+        <div>
+          <span>Audio segment</span>
+          <strong id="audioStateLabel">Idle</strong>
+          <small id="audioDetail">No backend audio yet</small>
+        </div>
+      </section>
+
       <section class="command-row" aria-label="Command input">
         <input id="commandInput" type="text" autocomplete="off" placeholder="Type a command for ULTRON..." />
         <button id="sendButton" type="button">Send</button>
       </section>
 
+      <section class="phase12-grid" aria-label="Skills, knowledge, and task history">
+        <div class="phase12-panel">
+          <div class="history-header">Skills</div>
+          <ul id="skillsList" class="compact-list"></ul>
+        </div>
+        <div class="phase12-panel">
+          <div class="history-header">Memory and knowledge</div>
+          <div class="memory-controls">
+            <button id="memoryToggle" type="button" aria-pressed="true">Memory On</button>
+            <input id="memoryForgetInput" type="text" autocomplete="off" placeholder="Forget memory..." />
+            <button id="memoryForgetButton" type="button">Forget</button>
+          </div>
+          <div class="knowledge-search">
+            <input id="knowledgeSearchInput" type="text" autocomplete="off" placeholder="Search local knowledge..." />
+            <button id="knowledgeSearchButton" type="button">Search</button>
+          </div>
+          <ul id="knowledgeList" class="compact-list"></ul>
+        </div>
+        <div class="phase12-panel">
+          <div class="history-header">Recent tasks</div>
+          <ol id="recentTasksList" class="compact-list"></ol>
+        </div>
+      </section>
+
       <section class="voice-history" aria-label="Voice transcript history">
-        <div class="history-header">Transcript history</div>
+        <div class="history-header">Conversation history</div>
         <ol id="voiceHistory"></ol>
       </section>
 
@@ -93,9 +137,34 @@
         <button data-state="listening" type="button">Listening</button>
         <button data-state="thinking" type="button">Thinking</button>
         <button data-state="speaking" type="button">Speaking</button>
+        <button data-state="waiting_for_wake_word" type="button">Wake</button>
+        <button data-state="inactive" type="button">Shutdown</button>
         <button data-state="idle" type="button">Idle</button>
       </nav>
     </main>
+    <section id="confirmationModal" class="confirmation-modal" aria-label="Action confirmation" aria-modal="true" hidden>
+      <div class="confirmation-dialog">
+        <div>
+          <span class="confirmation-kicker">Confirmation required</span>
+          <h2 id="confirmationTitle">Review action</h2>
+        </div>
+        <p id="confirmationMessage">ULTRON paused before running this action.</p>
+        <dl>
+          <div>
+            <dt>Tool</dt>
+            <dd id="confirmationTool">unknown</dd>
+          </div>
+          <div>
+            <dt>Permission</dt>
+            <dd id="confirmationPermission">pending</dd>
+          </div>
+        </dl>
+        <div class="confirmation-actions">
+          <button id="cancelConfirmationButton" type="button">Cancel</button>
+          <button id="approveConfirmationButton" class="confirm-action" type="button">Confirm</button>
+        </div>
+      </div>
+    </section>
     <script type="module" src="/app.js"></script>
   </body>
 </html>

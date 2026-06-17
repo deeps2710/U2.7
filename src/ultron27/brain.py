@@ -242,20 +242,35 @@ class UltronBrain:
 
     def _summarize(self, task: TaskPlan) -> str:
         if task.status == TaskState.COMPLETED:
-            return f"Completed {len(task.steps)} step(s) for: {task.original_goal}"
+            return _assistant_completion_summary(task)
         if task.status == TaskState.WAITING_FOR_CONFIRMATION:
-            return f"Paused for confirmation on step {self._first_noncompleted_step(task)}."
+            step = self._first_noncompleted_task_step(task)
+            reason = _step_reason(step) if step else "This command needs confirmation."
+            return f"Paused for confirmation: {reason}"
         if task.status == TaskState.BLOCKED:
-            return f"Blocked unsafe or unsupported step {self._first_noncompleted_step(task)}."
+            step = self._first_noncompleted_task_step(task)
+            reason = _step_reason(step) if step else "No safe supported tool matched the request."
+            tool = (step.tool_call or {}).get("name") if step else "unknown"
+            if tool == "unsupported_request":
+                return f"I do not have a safe tool for that yet. {reason} Try: create a note, open Notepad, search files, set a timer, or use Mock Voice."
+            return f"Blocked: {reason}"
         if task.status == TaskState.FAILED:
-            return f"Failed on step {self._first_noncompleted_step(task)}."
+            step = self._first_noncompleted_task_step(task)
+            reason = _step_reason(step) if step else "The selected tool failed."
+            return f"Failed: {reason}"
         return f"Task status: {task.status.value}"
 
     def _first_noncompleted_step(self, task: TaskPlan) -> str:
+        step = self._first_noncompleted_task_step(task)
+        if step is not None:
+            return step.step_id
+        return str(len(task.steps))
+
+    def _first_noncompleted_task_step(self, task: TaskPlan) -> TaskStep | None:
         for step in task.steps:
             if step.status != TaskState.COMPLETED:
-                return step.step_id
-        return str(len(task.steps))
+                return step
+        return None
 
 
 def format_task_plan(task: TaskPlan) -> str:
@@ -291,6 +306,74 @@ def _clean_text(value: str) -> str:
 
 def _looks_sensitive(value: str) -> bool:
     return bool(re.search(r"\b(password|passwd|secret|api[_ -]?key|token|credential|private key)\b", value, re.IGNORECASE))
+
+
+def _step_reason(step: TaskStep | None) -> str:
+    if step is None:
+        return ""
+    if step.error:
+        return step.error
+    result = step.result or {}
+    policy = step.policy or {}
+    validation = result.get("validation") if isinstance(result.get("validation"), dict) else {}
+    for payload in (result, policy, validation):
+        message = payload.get("message") or payload.get("reason")
+        if message:
+            return str(message)
+    return f"Step {step.step_id} could not be completed."
+
+
+def _assistant_completion_summary(task: TaskPlan) -> str:
+    if len(task.steps) == 1 and (task.steps[0].tool_call or {}).get("name") == "assistant_reply":
+        return _friendly_step_result(task.steps[0])
+    dry_run_steps = [step for step in task.steps if str((step.result or {}).get("status")) == "dry_run"]
+    prefix = "I am in dry-run mode, so I simulated this: " if dry_run_steps else "Done. "
+    if len(task.steps) > 1:
+        actions = [_friendly_step_result(step) for step in task.steps]
+        return prefix + " ".join(action for action in actions if action)
+    return prefix + (_friendly_step_result(task.steps[0]) if task.steps else f"Completed: {task.original_goal}")
+
+
+def _friendly_step_result(step: TaskStep) -> str:
+    tool = (step.tool_call or {}).get("name", "")
+    arguments = (step.tool_call or {}).get("arguments", {})
+    result = step.result or {}
+    message = str(result.get("message") or "")
+    status = str(result.get("status") or "")
+    if tool == "open_application":
+        return _would(status, f"opened {arguments.get('app', 'the application')}", message)
+    if tool == "assistant_reply":
+        return message or str(arguments.get("message") or "At your service.")
+    if tool == "ask_clarification":
+        return message or str(arguments.get("question") or "Could you clarify what you want me to do?")
+    if tool == "search_web":
+        return _would(status, f"searched the web for {arguments.get('query', 'your query')}", message)
+    if tool == "play_music":
+        return _would(status, f"opened Spotify for {arguments.get('query', 'your music')}", message)
+    if tool == "create_note":
+        return _would(status, f"created the note {arguments.get('title', 'untitled')}", message)
+    if tool == "append_to_note":
+        return _would(status, f"updated the note {arguments.get('title', 'untitled')}", message)
+    if tool == "search_files":
+        matches = result.get("data", {}).get("matches", []) if isinstance(result.get("data"), dict) else []
+        if status == "success":
+            return f"found {len(matches)} matching file(s)."
+        return _would(status, f"searched your files for {arguments.get('query', 'your query')}", message)
+    if tool == "set_reminder":
+        return _would(status, f"set the reminder {arguments.get('task', '')} {arguments.get('time', '')}".strip(), message)
+    if tool == "start_timer":
+        return _would(status, f"started a timer for {arguments.get('duration', '')}".strip(), message)
+    if tool == "take_screenshot":
+        return _would(status, "captured a screenshot", message)
+    return message or f"completed {step.utterance}."
+
+
+def _would(status: str, phrase: str, fallback: str) -> str:
+    if status == "dry_run":
+        return f"would have {phrase}."
+    if status == "success":
+        return f"I {phrase}."
+    return fallback or f"{phrase}."
 
 
 def _jsonable(value: Any) -> Any:

@@ -1,28 +1,25 @@
 from __future__ import annotations
 
-import json
 import os
 import platform
 import subprocess
 import sys
 import time
+import urllib.parse
+import webbrowser
 from pathlib import Path
 from typing import Iterable
 
 from .models import ToolCall, ToolResult
+from .windows_executor import (
+    WindowsAutomationAdapter,
+    is_windows,
+    merge_windows_app_aliases,
+    merge_windows_terminal_aliases,
+)
 
 
-DEFAULT_APP_ALIASES = {
-    "calculator": "calc.exe",
-    "calc": "calc.exe",
-    "command prompt": "cmd.exe",
-    "cmd": "cmd.exe",
-    "explorer": "explorer.exe",
-    "notepad": "notepad.exe",
-    "paint": "mspaint.exe",
-    "powershell": "powershell.exe",
-    "terminal": "wt.exe",
-}
+DEFAULT_APP_ALIASES = merge_windows_app_aliases()
 
 
 class Executor:
@@ -37,8 +34,10 @@ class Executor:
         self.dry_run = dry_run
         self.workspace = (workspace or Path.cwd()).resolve()
         self.safe_roots = tuple(_resolve_safe_roots(safe_roots, self.workspace))
-        self.app_aliases = {**DEFAULT_APP_ALIASES, **(app_aliases or {})}
+        self.app_aliases = merge_windows_app_aliases(app_aliases)
+        self.terminal_aliases = merge_windows_terminal_aliases(app_aliases)
         self.screenshot_dir = _resolve_under_workspace(screenshot_dir or Path(".ultron/screenshots"), self.workspace)
+        self.windows = WindowsAutomationAdapter(dry_run=dry_run, screenshot_dir=self.screenshot_dir)
 
     def execute(self, call: ToolCall) -> ToolResult:
         handler = getattr(self, f"_handle_{call.name}", None)
@@ -53,7 +52,11 @@ class Executor:
 
     def _handle_open_application(self, call: ToolCall) -> ToolResult:
         app = str(call.arguments["app"])
-        target = self.app_aliases.get(app.lower(), app)
+        if is_windows():
+            return self.windows.open_application(app, self.app_aliases)
+        target = self.app_aliases.get(app.lower())
+        if target is None:
+            return ToolResult("blocked", f"Application is not in the approved alias registry: {app}", data={"app": app})
         if self.dry_run:
             return ToolResult("dry_run", f"Would open application: {app}", data={"app": app, "target": target})
         try:
@@ -62,9 +65,19 @@ class Executor:
             return ToolResult("error", f"Could not open application: {exc}", data={"app": app, "target": target})
         return ToolResult("success", f"Opened application: {app}", changed={"app": app, "target": target})
 
+    def _handle_assistant_reply(self, call: ToolCall) -> ToolResult:
+        message = str(call.arguments["message"]).strip()
+        return ToolResult("success", message or "At your service.")
+
+    def _handle_ask_clarification(self, call: ToolCall) -> ToolResult:
+        question = str(call.arguments["question"]).strip()
+        return ToolResult("success", question or "Could you clarify what you want me to do?")
+
     def _handle_open_terminal(self, call: ToolCall) -> ToolResult:
         terminal_type = str(call.arguments.get("terminal_type", "default"))
-        target = self.app_aliases.get(terminal_type.lower(), self.app_aliases.get("terminal", "cmd.exe" if os.name == "nt" else "sh"))
+        if is_windows():
+            return self.windows.open_terminal(terminal_type, self.terminal_aliases)
+        target = self.terminal_aliases.get(terminal_type.lower(), self.terminal_aliases.get("default", "sh"))
         if self.dry_run:
             return ToolResult("dry_run", f"Would open terminal: {terminal_type}", data={"target": target})
         try:
@@ -75,7 +88,13 @@ class Executor:
 
     def _handle_search_files(self, call: ToolCall) -> ToolResult:
         query = str(call.arguments["query"]).lower()
-        root = self._select_search_root(call.arguments.get("folder"))
+        root, denied = self._select_search_root(call.arguments.get("folder"))
+        if denied:
+            return ToolResult(
+                "blocked",
+                f"Search folder is outside configured safe roots: {call.arguments.get('folder')}",
+                data={"safe_roots": [str(root) for root in self.safe_roots]},
+            )
         file_type = str(call.arguments.get("file_type", "")).lower().lstrip(".")
         if self.dry_run:
             return ToolResult("dry_run", f"Would search {root} for: {query}", data={"root": str(root), "query": query, "file_type": file_type})
@@ -94,20 +113,28 @@ class Executor:
 
     def _handle_open_file(self, call: ToolCall) -> ToolResult:
         file_name = str(call.arguments["file_name"])
+        if self._is_explicit_path_outside_roots(file_name):
+            return ToolResult("blocked", f"File is outside configured safe roots: {file_name}", data={"safe_roots": [str(root) for root in self.safe_roots]})
         path = self._find_file(file_name)
         if path is None:
             return ToolResult("not_found", f"Could not find file in safe roots: {file_name}", data={"safe_roots": [str(root) for root in self.safe_roots]})
         if self.dry_run:
             return ToolResult("dry_run", f"Would open file: {path.name}", data={"path": str(path)})
+        if is_windows():
+            return self.windows.open_path(path)
         return _open_path(path)
 
     def _handle_open_folder(self, call: ToolCall) -> ToolResult:
         folder = str(call.arguments["folder"])
+        if self._is_explicit_path_outside_roots(folder):
+            return ToolResult("blocked", f"Folder is outside configured safe roots: {folder}", data={"safe_roots": [str(root) for root in self.safe_roots]})
         path = self._find_folder(folder)
         if path is None:
             return ToolResult("not_found", f"Could not find folder in safe roots: {folder}", data={"safe_roots": [str(root) for root in self.safe_roots]})
         if self.dry_run:
             return ToolResult("dry_run", f"Would open folder: {path}", data={"path": str(path)})
+        if is_windows():
+            return self.windows.open_path(path)
         return _open_path(path)
 
     def _handle_create_note(self, call: ToolCall) -> ToolResult:
@@ -142,6 +169,8 @@ class Executor:
             return ToolResult("dry_run", f"Would set reminder: {reminder['task']} {reminder['time']}", data=reminder)
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
+            import json
+
             handle.write(json.dumps(reminder, ensure_ascii=False, sort_keys=True) + "\n")
         return ToolResult("success", f"Reminder saved: {reminder['task']} {reminder['time']}", changed={"path": str(path), **reminder})
 
@@ -156,10 +185,40 @@ class Executor:
             return ToolResult("dry_run", f"Would start timer: {timer['duration']}", data=timer)
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
+            import json
+
             handle.write(json.dumps(timer, ensure_ascii=False, sort_keys=True) + "\n")
         return ToolResult("success", f"Timer saved: {timer['duration']}", changed={"path": str(path), **timer})
 
+    def _handle_search_web(self, call: ToolCall) -> ToolResult:
+        query = str(call.arguments["query"]).strip()
+        if not query:
+            return ToolResult("blocked", "Web search needs a non-empty query.")
+        url = f"https://www.google.com/search?q={urllib.parse.quote_plus(query)}"
+        if self.dry_run:
+            return ToolResult("dry_run", f"Would search the web for: {query}", data={"query": query, "url": url})
+        return _open_url(url, f"Opened web search for: {query}", {"query": query, "url": url})
+
+    def _handle_play_music(self, call: ToolCall) -> ToolResult:
+        query = str(call.arguments["query"]).strip()
+        if not query:
+            return ToolResult("blocked", "Music playback needs a song, artist, or playlist name.")
+        spotify_url = f"https://open.spotify.com/search/{urllib.parse.quote(query, safe='')}"
+        spotify_uri = f"spotify:search:{urllib.parse.quote(query, safe='')}"
+        if self.dry_run:
+            return ToolResult(
+                "dry_run",
+                f"Would open Spotify search for: {query}",
+                data={"query": query, "url": spotify_url, "spotify_uri": spotify_uri},
+            )
+        opened = _open_url(spotify_uri, f"Opened Spotify search for: {query}", {"query": query, "url": spotify_uri})
+        if opened.status == "success":
+            return opened
+        return _open_url(spotify_url, f"Opened Spotify web search for: {query}", {"query": query, "url": spotify_url})
+
     def _handle_take_screenshot(self, call: ToolCall) -> ToolResult:
+        if is_windows():
+            return self.windows.take_screenshot()
         path = self.screenshot_dir / f"screenshot-{int(time.time())}.png"
         if self.dry_run:
             return ToolResult("dry_run", f"Would save screenshot: {path}", data={"path": str(path)})
@@ -177,26 +236,48 @@ class Executor:
 
     def _handle_copy_to_clipboard(self, call: ToolCall) -> ToolResult:
         text = str(call.arguments["text"])
+        if is_windows():
+            return self.windows.write_clipboard(text)
         if self.dry_run:
             return ToolResult("dry_run", "Would copy text to clipboard.", data={"text_length": len(text)})
         return _write_clipboard(text)
 
     def _handle_read_clipboard(self, call: ToolCall) -> ToolResult:
+        if is_windows():
+            return self.windows.read_clipboard()
         if self.dry_run:
             return ToolResult("dry_run", "Would read clipboard text.")
         return _read_clipboard()
 
     def _handle_set_system_volume(self, call: ToolCall) -> ToolResult:
         level = int(call.arguments["level"])
+        if is_windows():
+            return self.windows.set_system_volume(level)
         if self.dry_run:
             return ToolResult("dry_run", f"Would set volume to {level}%", data={"level": level})
-        return ToolResult("not_implemented", "Volume control needs a Windows/macOS/Linux adapter.", data={"level": level})
+        return ToolResult("not_implemented", "Volume control needs an OS-specific adapter.", data={"level": level})
+
+    def _handle_mute_system_volume(self, call: ToolCall) -> ToolResult:
+        mute = bool(call.arguments["mute"])
+        if is_windows():
+            return self.windows.set_mute(mute)
+        if self.dry_run:
+            return ToolResult("dry_run", f"Would {'mute' if mute else 'unmute'} system audio.", data={"mute": mute})
+        return ToolResult("not_implemented", "Mute control needs an OS-specific adapter.", data={"mute": mute})
 
     def _handle_set_screen_brightness(self, call: ToolCall) -> ToolResult:
         level = int(call.arguments["level"])
+        if is_windows():
+            return self.windows.set_screen_brightness(level)
         if self.dry_run:
             return ToolResult("dry_run", f"Would set brightness to {level}%", data={"level": level})
-        return ToolResult("not_implemented", "Brightness control needs a Windows/macOS/Linux adapter.", data={"level": level})
+        return ToolResult("not_implemented", "Brightness control needs an OS-specific adapter.", data={"level": level})
+
+    def _handle_adjust_system_volume(self, call: ToolCall) -> ToolResult:
+        return ToolResult("not_implemented", "Relative volume adjustment needs current-level readback before it can run safely.", data=call.arguments)
+
+    def _handle_adjust_screen_brightness(self, call: ToolCall) -> ToolResult:
+        return ToolResult("not_implemented", "Relative brightness adjustment needs current-level readback before it can run safely.", data=call.arguments)
 
     def _handle_delete_file(self, call: ToolCall) -> ToolResult:
         file_name = str(call.arguments["file_name"])
@@ -210,20 +291,47 @@ class Executor:
     def _handle_send_email(self, call: ToolCall) -> ToolResult:
         return ToolResult("not_implemented", "Email sending is intentionally not implemented; use draft_email first.", data=call.arguments)
 
-    def _select_search_root(self, folder: object | None) -> Path:
+    def _handle_shutdown_system(self, call: ToolCall) -> ToolResult:
+        return ToolResult("not_implemented", "Shutdown is intentionally not implemented in this prototype.", data=call.arguments)
+
+    def _handle_restart_system(self, call: ToolCall) -> ToolResult:
+        return ToolResult("not_implemented", "Restart is intentionally not implemented in this prototype.", data=call.arguments)
+
+    def _handle_move_file(self, call: ToolCall) -> ToolResult:
+        return ToolResult("not_implemented", "Moving files is confirmation-gated and not implemented until a safe move policy is designed.", data=call.arguments)
+
+    def _handle_rename_file(self, call: ToolCall) -> ToolResult:
+        return ToolResult("not_implemented", "Renaming files is confirmation-gated and not implemented until a safe rename policy is designed.", data=call.arguments)
+
+    def _handle_close_application(self, call: ToolCall) -> ToolResult:
+        return ToolResult("not_implemented", "Closing apps needs a separate allowlisted window-control adapter.", data=call.arguments)
+
+    def _select_search_root(self, folder: object | None) -> tuple[Path, bool]:
         if not folder:
-            return self.safe_roots[0]
+            return self.safe_roots[0], False
+        explicit = Path(str(folder)).expanduser()
+        if explicit.is_absolute():
+            resolved = explicit.resolve()
+            if resolved.is_dir() and any(_is_relative_to(resolved, root) for root in self.safe_roots):
+                return resolved, False
+            return self.safe_roots[0], True
         folder_name = str(folder).lower()
         for root in self.safe_roots:
             if root.name.lower() == folder_name:
-                return root
+                return root, False
             candidate = root / str(folder)
             if candidate.exists() and candidate.is_dir() and _is_relative_to(candidate.resolve(), root):
-                return candidate.resolve()
-        return self.safe_roots[0]
+                return candidate.resolve(), False
+        return self.safe_roots[0], False
 
     def _find_file(self, file_name: str) -> Path | None:
         target = file_name.lower()
+        explicit = Path(file_name).expanduser()
+        if explicit.is_absolute():
+            resolved = explicit.resolve()
+            if resolved.is_file() and any(_is_relative_to(resolved, root) for root in self.safe_roots):
+                return resolved
+            return None
         for root in self.safe_roots:
             direct = root / file_name
             if direct.is_file() and _is_relative_to(direct.resolve(), root):
@@ -235,6 +343,12 @@ class Executor:
 
     def _find_folder(self, folder_name: str) -> Path | None:
         target = folder_name.lower()
+        explicit = Path(folder_name).expanduser()
+        if explicit.is_absolute():
+            resolved = explicit.resolve()
+            if resolved.is_dir() and any(_is_relative_to(resolved, root) for root in self.safe_roots):
+                return resolved
+            return None
         for root in self.safe_roots:
             if root.name.lower() == target:
                 return root
@@ -245,6 +359,13 @@ class Executor:
                 if path.is_dir() and path.name.lower() == target:
                     return path.resolve()
         return None
+
+    def _is_explicit_path_outside_roots(self, value: str) -> bool:
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            return False
+        resolved = path.resolve()
+        return not any(_is_relative_to(resolved, root) for root in self.safe_roots)
 
 
 def _safe_filename(value: str) -> str:
@@ -288,6 +409,16 @@ def _open_path(path: Path) -> ToolResult:
     except OSError as exc:
         return ToolResult("error", f"Could not open path: {exc}", data={"path": str(path)})
     return ToolResult("success", f"Opened: {path.name}", changed={"path": str(path)})
+
+
+def _open_url(url: str, success_message: str, changed: dict[str, str]) -> ToolResult:
+    try:
+        opened = webbrowser.open(url, new=2)
+    except Exception as exc:
+        return ToolResult("error", f"Could not open URL: {exc}", data=changed)
+    if not opened:
+        return ToolResult("error", "The system browser did not accept the URL.", data=changed)
+    return ToolResult("success", success_message, changed=changed)
 
 
 def _write_clipboard(text: str) -> ToolResult:

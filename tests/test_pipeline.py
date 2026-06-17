@@ -2,30 +2,50 @@ from __future__ import annotations
 
 import io
 import json
+import socket
 import threading
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 from urllib.request import Request, urlopen
 
-from ultron27.audit import append_audit_record
+from ultron27.audit import append_audit_record, read_recent_audit_records
 from ultron27.brain import MemoryStore, TaskState, UltronBrain
 from ultron27.cli import main
 from ultron27.console import format_assistant_response, run_console
 from ultron27.config import load_config
+from ultron27.conversation import ConversationManager
+from ultron27.diagnostics import build_diagnostics
 from ultron27.dataset_quality import DatasetRow, analyze_dataset, build_safety_cases, is_underspecified
 from ultron27.executor import Executor
+from ultron27.knowledge import KnowledgeBase
 from ultron27.llm import LLMPlanner, LLMPlannerError, parse_llm_tool_call
-from ultron27.models import ToolCall
+from ultron27.models import RiskLevel, ToolCall
 from ultron27.planner import DatasetPlanner, regex_plan
 from ultron27.policy import decide
 from ultron27.runtime import RuntimeSettings, UltronAssistant
+from ultron27.skills import SkillRegistry, SkillSpec, validate_skill_input
 from ultron27.tools import validate_tool_call
-from ultron27.voice import MockSTT, MockTTS, TextPayloadSTT, VoiceProviderConfig, VoiceSession, build_voice_session, strip_wake_word
+from ultron27.voice import (
+    MockMicrophoneCapture,
+    MockSTT,
+    MockTTS,
+    TextPayloadSTT,
+    VoiceProviderConfig,
+    VoiceSession,
+    analyze_audio_payload,
+    build_voice_session,
+    clean_transcript,
+    strip_wake_word,
+)
 from ultron27.wake import MockVADProvider, MockWakeWordProvider, WakeGateConfig
 from ultron27.web_server import WebState, make_handler
+from ultron27.windows_executor import merge_windows_app_aliases, resolve_app_alias
+from scripts.config_wizard import generate_config
+from scripts.launch_ultron import find_open_port
 
 
 class PipelineTest(unittest.TestCase):
@@ -53,6 +73,74 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(plan.tool_call.name, "play_music")
         self.assertEqual(plan.tool_call.arguments, {"query": "lofi beats"})
         self.assertEqual(plan.source, "dataset_exact")
+
+    def test_regex_web_and_spotify_commands_use_typed_tools(self) -> None:
+        web = regex_plan("search the web for weather in Delhi")
+        spotify = regex_plan("play blinding lights on spotify")
+        generic_spotify = regex_plan("play songs through spotify")
+
+        self.assertEqual(web.tool_call, ToolCall("search_web", {"query": "weather in delhi"}))
+        self.assertEqual(spotify.tool_call, ToolCall("play_music", {"query": "blinding lights"}))
+        self.assertEqual(generic_spotify.tool_call, ToolCall("play_music", {"query": "songs"}))
+
+    def test_assistant_reply_handles_conversation_without_blocking(self) -> None:
+        state = WebState(UltronBrain(UltronAssistant(_test_settings())))
+
+        payload = state.command("hello ultron")
+
+        self.assertEqual(payload["route"], "chat")
+        self.assertEqual(payload["task"]["status"], "completed")
+        self.assertEqual(payload["task"]["steps"][0]["tool_call"]["name"], "assistant_reply")
+        self.assertIn("At your service", payload["subtitle"])
+
+    def test_conversation_manager_learns_and_forgets_safe_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = _workspace_settings(Path(tmp), dry_run=True, write_audit=False)
+            state = WebState(UltronBrain(UltronAssistant(settings)))
+
+            remembered = state.command("remember that I prefer concise responses")
+            memory = state.memory_status()
+            forgotten = state.memory_forget("concise")
+
+            self.assertEqual(remembered["route"], "memory_remember")
+            self.assertTrue(any("concise responses" in item["value"] for item in memory["memory"]))
+            self.assertEqual(forgotten["removed"], 1)
+            self.assertFalse(any("concise responses" in item.get("value", "") for item in forgotten["memory"]))
+
+    def test_conversation_memory_off_stops_new_personalization(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = _workspace_settings(Path(tmp), dry_run=True, write_audit=False)
+            state = WebState(UltronBrain(UltronAssistant(settings)))
+
+            off = state.command("turn memory off")
+            remembered = state.command("remember that I prefer long reports")
+
+            self.assertEqual(off["route"], "memory_toggle")
+            self.assertFalse(remembered["memory_enabled"])
+            self.assertIn("did not store", remembered["response"])
+            self.assertFalse(any("long reports" in item.get("value", "") for item in state.memory_status()["memory"]))
+
+    def test_conversation_high_risk_still_requires_confirmation(self) -> None:
+        manager = ConversationManager(UltronBrain(UltronAssistant(_test_settings())))
+
+        payload = manager.handle("delete project_report.txt")
+
+        self.assertEqual(payload["route"], "command")
+        self.assertTrue(payload["needs_confirmation"])
+        self.assertEqual(payload["task"]["status"], "waiting_for_confirmation")
+
+    def test_web_and_spotify_executor_open_safe_urls(self) -> None:
+        executor = Executor(dry_run=False)
+
+        with patch("webbrowser.open", return_value=True) as open_mock:
+            web = executor.execute(ToolCall("search_web", {"query": "ultron project"}))
+            spotify = executor.execute(ToolCall("play_music", {"query": "lofi beats"}))
+
+        self.assertEqual(web.status, "success")
+        self.assertEqual(spotify.status, "success")
+        opened_urls = [call.args[0] for call in open_mock.call_args_list]
+        self.assertTrue(any(url.startswith("https://www.google.com/search?") for url in opened_urls))
+        self.assertTrue(any(url.startswith("spotify:search:") for url in opened_urls))
 
     def test_planner_prefers_numeric_slot_extraction_over_fuzzy_match(self) -> None:
         planner = DatasetPlanner.from_jsonl()
@@ -288,6 +376,80 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(plan.tool_call, ToolCall("open_application", {"app": "notepad"}))
         self.assertEqual(plan.source, "llm")
         self.assertEqual(plan.risk_level.value, "low")
+
+    def test_phase15_regex_handles_flexible_open_app_phrasing(self) -> None:
+        phrases = ["launch notepad", "bring up notepad", "start the notes app"]
+
+        plans = [regex_plan(phrase) for phrase in phrases]
+
+        self.assertTrue(all(plan.tool_call == ToolCall("open_application", {"app": "notepad"}) for plan in plans))
+        self.assertTrue(all(plan.source == "regex" for plan in plans))
+
+    def test_phase15_llm_low_confidence_asks_clarification(self) -> None:
+        class FakeProvider:
+            def complete(self, prompt: str, timeout: float) -> str:
+                return '{"intent":"open_app","tool_name":"open_application","tool_arguments":{"app":"notepad"},"confidence":0.2}'
+
+        plan = LLMPlanner(FakeProvider()).plan("maybe notes maybe not")
+
+        self.assertEqual(plan.tool_call.name, "ask_clarification")
+        self.assertEqual(plan.intent, "clarify_intent")
+        self.assertEqual(plan.risk_level.value, "none")
+        self.assertNotIn("I heard", plan.tool_call.arguments["question"])
+
+    def test_phase15_llm_explicit_clarification_payload_is_supported(self) -> None:
+        call, intent, confidence = parse_llm_tool_call(
+            '{"intent":"clarify_intent","tool_name":"ask_clarification","tool_arguments":{"question":"What text should I write in Notepad?"},"confidence":0.72,"needs_clarification":true,"clarification_question":"What text should I write in Notepad?"}'
+        )
+
+        self.assertEqual(call, ToolCall("ask_clarification", {"question": "What text should I write in Notepad?"}))
+        self.assertEqual(intent, "clarify_intent")
+        self.assertEqual(confidence, 0.72)
+
+    def test_phase15_llm_parser_strips_thinking_blocks(self) -> None:
+        call, intent, confidence = parse_llm_tool_call(
+            '<think>I should not be visible.</think>{"intent":"open_app","tool_name":"open_application","tool_arguments":{"app":"notepad"},"confidence":0.87}'
+        )
+
+        self.assertEqual(call, ToolCall("open_application", {"app": "notepad"}))
+        self.assertEqual(intent, "open_app")
+        self.assertEqual(confidence, 0.87)
+
+    def test_phase15_mock_llm_maps_flexible_music_phrase(self) -> None:
+        class FakeProvider:
+            def complete(self, prompt: str, timeout: float) -> str:
+                self.prompt = prompt
+                return '{"intent":"play_music","tool_name":"play_music","tool_arguments":{"query":"lofi music"},"confidence":0.78}'
+
+        provider = FakeProvider()
+        plan = LLMPlanner(provider).plan("put on some lofi music")
+
+        self.assertEqual(plan.tool_call, ToolCall("play_music", {"query": "lofi music"}))
+        self.assertIn("put on some lofi music", provider.prompt)
+
+    def test_phase15_hybrid_llm_unavailable_falls_back_safely(self) -> None:
+        settings = RuntimeSettings(
+            dataset_path=Path("data/jarvis_dataset_v2/jarvis_laptop_commands_synthetic_v2.jsonl"),
+            audit_log=Path(".ultron/test-audit.jsonl"),
+            workspace=Path("."),
+            dry_run=True,
+            safe_roots=(Path("."),),
+            app_aliases=None,
+            screenshot_dir=Path(".ultron/screenshots"),
+            planner_mode="hybrid",
+            llm_model="unused",
+            llm_endpoint="http://localhost:11434",
+            llm_timeout_seconds=1.0,
+            write_audit=False,
+        )
+        assistant = UltronAssistant(settings)
+
+        with patch("ultron27.runtime.make_ollama_router", side_effect=LLMPlannerError("Ollama unavailable")):
+            payload = assistant.handle("do a completely unknown assistant task")
+
+        self.assertEqual(payload["tool_call"]["name"], "unsupported_request")
+        self.assertTrue(payload["runtime"]["llm"]["attempted"])
+        self.assertIn("Ollama unavailable", payload["runtime"]["llm"]["error"])
 
     def test_phase4_config_accepts_llm_settings(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -664,8 +826,10 @@ class PipelineTest(unittest.TestCase):
         payload = state.voice_transcribe({"transcript": "create note subtitles"})
         toggled = state.toggle_subtitles(False)
 
-        self.assertIn("You: create note subtitles", payload["last_subtitle"])
-        self.assertIn("ULTRON:", payload["last_subtitle"])
+        self.assertNotIn("You said:", payload["last_subtitle"])
+        self.assertNotIn("Understood:", payload["last_subtitle"])
+        self.assertNotIn("ULTRON:", payload["last_subtitle"])
+        self.assertIn("note", payload["last_subtitle"].lower())
         self.assertFalse(toggled["subtitles_enabled"])
 
     def test_phase8_empty_voice_input_does_not_execute(self) -> None:
@@ -677,6 +841,17 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(payload["visual_state"], "listening")
         self.assertEqual(payload["last_task"], None)
         self.assertEqual(payload["history"], [])
+
+    def test_voice_low_confidence_transcript_asks_for_clarification(self) -> None:
+        state = WebState(UltronBrain(UltronAssistant(_test_settings())))
+
+        payload = state.voice_transcribe({"transcript": "delete project report", "confidence": 0.2})
+
+        self.assertEqual(payload["status"], "clarification_required")
+        self.assertEqual(payload["last_task"], None)
+        self.assertNotIn("I heard", payload["spoken_response"])
+        self.assertIn("not fully sure", payload["spoken_response"])
+        self.assertEqual(payload["history"][0]["action_result"], "clarification_required")
 
     def test_phase8_voice_api_endpoints(self) -> None:
         state = WebState(UltronBrain(UltronAssistant(_test_settings())))
@@ -719,6 +894,22 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(started["visual_state"], "listening")
         self.assertEqual(transcribed["task"]["steps"][0]["tool_call"]["name"], "create_note")
         self.assertEqual(status["status"], "ok")
+
+    def test_voice_session_defaults_to_continuous_listening(self) -> None:
+        state = WebState(UltronBrain(UltronAssistant(_test_settings())))
+
+        payload = state.voice_status()
+
+        self.assertFalse(payload["voice"]["push_to_talk"])
+
+    def test_blocked_command_summary_is_actionable(self) -> None:
+        state = WebState(UltronBrain(UltronAssistant(_test_settings())))
+
+        payload = state.command("do something impossible and unsafe")
+
+        self.assertEqual(payload["task"]["status"], "blocked")
+        self.assertIn("I do not have a safe tool", payload["subtitle"])
+        self.assertIn("create a note", payload["subtitle"])
 
     def test_phase9_config_accepts_voice_provider_settings(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1009,9 +1200,332 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(ignored["status"], "ignored")
         self.assertEqual(stopped["wake"]["mode"], "inactive")
 
+    def test_phase11_safe_root_blocks_explicit_outside_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            allowed = workspace / "allowed"
+            outside = workspace / "outside"
+            allowed.mkdir()
+            outside.mkdir()
+            outside_file = outside / "secret.txt"
+            outside_file.write_text("nope", encoding="utf-8")
+
+            executor = Executor(dry_run=False, workspace=workspace, safe_roots=(allowed,))
+
+            opened = executor.execute(ToolCall("open_file", {"file_name": str(outside_file)}))
+            searched = executor.execute(ToolCall("search_files", {"query": "secret", "folder": str(outside)}))
+
+            self.assertEqual(opened.status, "blocked")
+            self.assertEqual(searched.status, "blocked")
+
+    def test_phase11_windows_app_alias_resolution_is_allowlisted(self) -> None:
+        aliases = merge_windows_app_aliases({"editor": "notepad.exe", "bad": "cmd.exe && whoami"})
+
+        self.assertEqual(resolve_app_alias("Chrome", aliases), "chrome.exe")
+        self.assertEqual(resolve_app_alias("editor", aliases), "notepad.exe")
+        self.assertIsNone(resolve_app_alias("bad", aliases))
+        self.assertIsNone(resolve_app_alias("unknown app", aliases))
+
+    def test_phase11_medium_risk_terminal_requires_confirmation(self) -> None:
+        plan = regex_plan("open terminal")
+        decision = decide(plan, validate_tool_call(plan.tool_call))
+        payload = UltronAssistant(_test_settings()).handle("open terminal")
+
+        self.assertEqual(plan.tool_call.name, "open_terminal")
+        self.assertEqual(decision.action, "confirm")
+        self.assertEqual(decision.permission_level, "medium_risk_confirmation")
+        self.assertEqual(payload["tool_call"]["name"], "open_terminal")
+        self.assertEqual(payload["policy"]["action"], "confirm")
+
+    def test_phase11_destructive_action_remains_unimplemented_after_confirmation(self) -> None:
+        plan = regex_plan("delete project_report.txt")
+        decision = decide(plan, validate_tool_call(plan.tool_call), confirmed=True)
+        result = Executor(dry_run=False).execute(plan.tool_call)
+
+        self.assertEqual(decision.action, "allow")
+        self.assertEqual(decision.permission_level, "destructive_blocked_or_not_implemented")
+        self.assertEqual(result.status, "not_implemented")
+
+    def test_phase11_audit_reader_returns_recent_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_path = Path(tmp) / "audit.jsonl"
+            append_audit_record({"utterance": "first"}, audit_path)
+            append_audit_record({"utterance": "second"}, audit_path)
+
+            records = read_recent_audit_records(audit_path, limit=1)
+
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["utterance"], "second")
+
+    def test_phase11_audit_recent_api_endpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            settings = RuntimeSettings(
+                dataset_path=Path("data/jarvis_dataset_v2/jarvis_laptop_commands_synthetic_v2.jsonl"),
+                audit_log=workspace / ".ultron" / "audit.jsonl",
+                workspace=workspace,
+                dry_run=True,
+                safe_roots=(workspace,),
+                app_aliases=None,
+                screenshot_dir=workspace / ".ultron" / "screenshots",
+                planner_mode="rules",
+                llm_model="unused",
+                llm_endpoint="http://localhost:11434",
+                llm_timeout_seconds=1.0,
+                write_audit=True,
+            )
+            state = WebState(UltronBrain(UltronAssistant(settings)))
+            state.command("open notepad")
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(state))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base = f"http://127.0.0.1:{server.server_address[1]}"
+                payload = json.loads(urlopen(base + "/api/audit/recent?limit=5", timeout=5).read().decode("utf-8"))
+            finally:
+                server.shutdown()
+                server.server_close()
+
+            self.assertEqual(payload["status"], "ok")
+            self.assertTrue(payload["records"])
+            self.assertTrue(any(record.get("utterance") == "open notepad" for record in payload["records"]))
+
+    def test_phase12_skill_schema_validation(self) -> None:
+        registry = SkillRegistry.with_builtins(
+            UltronAssistant(_test_settings()),
+            KnowledgeBase(Path(".ultron/test-knowledge.json"), workspace=Path("."), safe_roots=(Path("."),)),
+        )
+        spec = registry.specs["notes"]
+
+        validation = validate_skill_input(spec, {"action": "create"})
+
+        self.assertFalse(validation.valid)
+        self.assertIn("Missing required input: title", validation.errors)
+
+    def test_phase12_unknown_skill_is_rejected(self) -> None:
+        registry = SkillRegistry.with_builtins(
+            UltronAssistant(_test_settings()),
+            KnowledgeBase(Path(".ultron/test-knowledge.json"), workspace=Path("."), safe_roots=(Path("."),)),
+        )
+
+        result = registry.run("unknown_skill", {})
+
+        self.assertEqual(result["status"], "unknown_skill")
+
+    def test_phase12_notes_skill_runs_through_safe_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            assistant = UltronAssistant(_workspace_settings(workspace, dry_run=False, write_audit=False))
+            knowledge = KnowledgeBase(workspace / ".ultron" / "knowledge.json", workspace=workspace, safe_roots=(workspace,))
+            registry = SkillRegistry.with_builtins(assistant, knowledge)
+
+            result = registry.run("notes", {"action": "create", "title": "phase twelve", "content": "skills work"})
+
+            self.assertEqual(result["status"], "success")
+            self.assertTrue((workspace / "notes" / "phase_twelve.md").exists())
+            self.assertEqual(result["result"]["runtime"]["tool_call"]["name"], "create_note")
+            self.assertEqual(result["result"]["runtime"]["policy"]["action"], "allow")
+
+    def test_phase12_knowledge_ingest_and_search(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            source = workspace / "phase12.md"
+            source.write_text("Phase 12 adds reusable skills and a local knowledge base for project planning.", encoding="utf-8")
+            knowledge = KnowledgeBase(workspace / ".ultron" / "knowledge.json", workspace=workspace, safe_roots=(workspace,))
+
+            ingest = knowledge.ingest(source)
+            search = knowledge.search("reusable skills", limit=3)
+
+            self.assertEqual(ingest["status"], "ok")
+            self.assertEqual(search["status"], "ok")
+            self.assertEqual(search["matches"][0]["title"], "phase12")
+
+    def test_phase12_knowledge_rejects_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            source = workspace / "secret.txt"
+            source.write_text("api_key = do-not-store-this", encoding="utf-8")
+            knowledge = KnowledgeBase(workspace / ".ultron" / "knowledge.json", workspace=workspace, safe_roots=(workspace,))
+
+            ingest = knowledge.ingest(source)
+
+            self.assertEqual(ingest["status"], "rejected_sensitive")
+            self.assertEqual(knowledge.sources(), [])
+
+    def test_phase12_skill_policy_still_blocks_unconfirmed_medium_skill(self) -> None:
+        registry = SkillRegistry.with_builtins(
+            UltronAssistant(_test_settings()),
+            KnowledgeBase(Path(".ultron/test-knowledge.json"), workspace=Path("."), safe_roots=(Path("."),)),
+        )
+        registry.register(
+            SkillSpec(
+                name="medium_test",
+                description="A medium-risk test skill.",
+                input_schema={"required": {"value": {"type": "string"}}, "optional": {}},
+                risk_level=RiskLevel.MEDIUM,
+            ),
+            lambda _registry, _payload, _confirmed: {"status": "ok"},
+        )
+
+        result = registry.run("medium_test", {"value": "safe text"})
+
+        self.assertEqual(result["status"], "confirmation_required")
+        self.assertEqual(result["policy"]["permission_level"], "medium_risk_confirmation")
+
+    def test_phase12_skills_and_knowledge_api_endpoints(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            source = workspace / "project.txt"
+            source.write_text("ULTRON skills can summarize local project knowledge.", encoding="utf-8")
+            assistant = UltronAssistant(_workspace_settings(workspace, dry_run=True, write_audit=False))
+            knowledge = KnowledgeBase(workspace / ".ultron" / "knowledge.json", workspace=workspace, safe_roots=(workspace,))
+            state = WebState(UltronBrain(assistant), knowledge=knowledge, skills=SkillRegistry.with_builtins(assistant, knowledge))
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(state))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base = f"http://127.0.0.1:{server.server_address[1]}"
+                skills = json.loads(urlopen(base + "/api/skills", timeout=5).read().decode("utf-8"))
+                ingest = json.loads(
+                    urlopen(
+                        Request(
+                            base + "/api/knowledge/ingest",
+                            data=json.dumps({"path": str(source)}).encode("utf-8"),
+                            headers={"Content-Type": "application/json"},
+                            method="POST",
+                        ),
+                        timeout=5,
+                    )
+                    .read()
+                    .decode("utf-8")
+                )
+                search = json.loads(urlopen(base + "/api/knowledge/search?query=skills", timeout=5).read().decode("utf-8"))
+                skill_run = json.loads(
+                    urlopen(
+                        Request(
+                            base + "/api/skills/run",
+                            data=json.dumps({"name": "project_summary", "input": {"query": "skills"}}).encode("utf-8"),
+                            headers={"Content-Type": "application/json"},
+                            method="POST",
+                        ),
+                        timeout=5,
+                    )
+                    .read()
+                    .decode("utf-8")
+                )
+            finally:
+                server.shutdown()
+                server.server_close()
+
+            self.assertEqual(skills["status"], "ok")
+            self.assertTrue(any(skill["name"] == "notes" for skill in skills["skills"]))
+            self.assertEqual(ingest["status"], "ok")
+            self.assertEqual(search["knowledge"]["matches"][0]["title"], "project")
+            self.assertEqual(skill_run["status"], "ok")
+
+    def test_phase13_diagnostics_snapshot_contains_readiness(self) -> None:
+        state = WebState(UltronBrain(UltronAssistant(_test_settings())))
+
+        payload = build_diagnostics(state)
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertIn("backend", payload)
+        self.assertEqual(payload["brain"]["planner_mode"], "rules")
+        self.assertIn("audit_log", payload["runtime"])
+        self.assertIn("providers", payload["voice"])
+        self.assertIn("recent_errors", payload)
+
+    def test_phase13_diagnostics_api_endpoint(self) -> None:
+        state = WebState(UltronBrain(UltronAssistant(_test_settings())))
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(state))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            payload = json.loads(urlopen(base + "/api/diagnostics", timeout=5).read().decode("utf-8"))
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertTrue(payload["version"].startswith("UltronPhase13"))
+        self.assertIn("safe_roots", payload["runtime"])
+
+    def test_phase13_config_wizard_defaults_are_safe(self) -> None:
+        config = generate_config(workspace="workspace", safe_roots=["workspace"], stt_provider="mock", tts_provider="mock")
+
+        self.assertTrue(config["dry_run"])
+        self.assertEqual(config["workspace"], "workspace")
+        self.assertEqual(config["safe_roots"], ["workspace"])
+        self.assertEqual(config["voice_stt_provider"], "mock")
+        self.assertEqual(config["voice_tts_provider"], "mock")
+
+    def test_phase13_launcher_finds_next_port_when_busy(self) -> None:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as busy:
+            busy.bind(("127.0.0.1", 0))
+            busy.listen(1)
+            used_port = busy.getsockname()[1]
+
+            open_port = find_open_port("127.0.0.1", used_port, attempts=3)
+
+        self.assertNotEqual(open_port, used_port)
+
     def test_phase8_wake_word_is_removed_from_transcript(self) -> None:
         self.assertEqual(strip_wake_word("ULTRON, create note demo"), "create note demo")
         self.assertEqual(strip_wake_word("hey ultron: open notepad"), "open notepad")
+
+    def test_phase14_transcript_cleanup_removes_fillers_and_repeats(self) -> None:
+        cleaned = clean_transcript("Hey ULTRON, um open open notepad please")
+
+        self.assertEqual(cleaned, "open notepad please")
+
+    def test_phase14_transcript_cleanup_removes_leading_by_before_command(self) -> None:
+        cleaned = clean_transcript("Bye play Blinding Lights on Spotify")
+
+        self.assertEqual(cleaned, "play Blinding Lights on Spotify")
+
+    def test_phase14_audio_analysis_rejects_short_or_noisy_input(self) -> None:
+        short = analyze_audio_payload({"audio_duration_ms": 90, "audio_energy": 0.2})
+        noisy = analyze_audio_payload({"audio_duration_ms": 1200, "speech_ms": 900, "audio_energy": 0.3, "noisy": True})
+
+        self.assertTrue(short["rejected"])
+        self.assertIn("too short", short["reason"])
+        self.assertTrue(noisy["rejected"])
+        self.assertTrue(noisy["noisy"])
+
+    def test_phase14_backend_mock_capture_executes_through_voice_pipeline(self) -> None:
+        voice = VoiceSession(capture=MockMicrophoneCapture("ULTRON, create note backend voice"), stt=TextPayloadSTT())
+        state = WebState(UltronBrain(UltronAssistant(_test_settings())), voice=voice)
+
+        payload = state.voice_capture({})
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["voice_diagnostics"]["capture_provider"], "mock_capture")
+        self.assertEqual(payload["transcript"]["text"], "create note backend voice")
+        self.assertEqual(payload["task"]["steps"][0]["tool_call"]["name"], "create_note")
+
+    def test_phase14_backend_capture_unavailable_is_nonfatal(self) -> None:
+        class UnavailableCapture:
+            name = "unavailable_capture"
+
+            def capture(self, payload: dict[str, object]) -> dict[str, object]:
+                return {"status": "unavailable", "message": "No backend microphone."}
+
+            def health(self):
+                from ultron27.voice import ProviderHealth
+
+                return ProviderHealth("capture", self.name, configured=True, active=True, available=False, detail="No backend microphone.")
+
+        state = WebState(
+            UltronBrain(UltronAssistant(_test_settings())),
+            voice=VoiceSession(capture=UnavailableCapture(), configured_capture=UnavailableCapture()),
+        )
+
+        payload = state.voice_capture({})
+
+        self.assertEqual(payload["status"], "capture_unavailable")
+        self.assertEqual(payload["last_task"], None)
+        self.assertIn("No backend microphone", payload["message"])
 
 
 def _test_settings() -> RuntimeSettings:
@@ -1028,6 +1542,23 @@ def _test_settings() -> RuntimeSettings:
         llm_endpoint="http://localhost:11434",
         llm_timeout_seconds=1.0,
         write_audit=False,
+    )
+
+
+def _workspace_settings(workspace: Path, *, dry_run: bool = True, write_audit: bool = False) -> RuntimeSettings:
+    return RuntimeSettings(
+        dataset_path=Path("data/jarvis_dataset_v2/jarvis_laptop_commands_synthetic_v2.jsonl"),
+        audit_log=workspace / ".ultron" / "audit.jsonl",
+        workspace=workspace,
+        dry_run=dry_run,
+        safe_roots=(workspace,),
+        app_aliases=None,
+        screenshot_dir=workspace / ".ultron" / "screenshots",
+        planner_mode="rules",
+        llm_model="unused",
+        llm_endpoint="http://localhost:11434",
+        llm_timeout_seconds=1.0,
+        write_audit=write_audit,
     )
 
 

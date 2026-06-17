@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ULTRON 2.7 Diagnostics</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="diagnostics-body">
+    <main class="diagnostics-shell">
+      <header class="diagnostics-header">
+        <div>
+          <p class="eyebrow">ULTRON 2.7</p>
+          <h1>Diagnostics</h1>
+        </div>
+        <nav class="diagnostics-nav">
+          <a href="/">Interface</a>
+          <button id="refreshDiagnostics" type="button">Refresh</button>
+        </nav>
+      </header>
+
+      <section id="diagnosticsStatus" class="diagnostics-banner">Loading diagnostics...</section>
+
+      <section class="diagnostics-grid" aria-label="Readiness diagnostics">
+        <article class="diagnostics-card">
+          <h2>Backend</h2>
+          <dl id="backendList"></dl>
+        </article>
+        <article class="diagnostics-card">
+          <h2>Brain</h2>
+          <dl id="brainList"></dl>
+        </article>
+        <article class="diagnostics-card">
+          <h2>Runtime Paths</h2>
+          <dl id="runtimeList"></dl>
+        </article>
+        <article class="diagnostics-card">
+          <h2>Voice Providers</h2>
+          <dl id="voiceList"></dl>
+        </article>
+        <article class="diagnostics-card">
+          <h2>Safe Roots</h2>
+          <ul id="safeRootsList" class="compact-list"></ul>
+        </article>
+        <article class="diagnostics-card">
+          <h2>Recent Errors</h2>
+          <ul id="errorsList" class="compact-list"></ul>
+        </article>
+      </section>
+    </main>
+    <script type="module" src="/diagnostics.js"></script>
+  </body>
+</html>

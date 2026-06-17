@@ -31,14 +31,19 @@ class UltronConfig:
     llm_endpoint: str = "http://localhost:11434"
     llm_timeout_seconds: float = 8.0
     voice_stt_provider: str = "text_payload"
+    voice_capture_provider: str = "browser"
+    voice_microphone_device: str | None = None
+    voice_sample_rate: int = 16000
+    voice_capture_seconds: float = 4.0
     voice_tts_provider: str = "browser_speech_synthesis"
+    voice_stt_model: str | None = None
     voice_stt_model_path: Path | None = None
     voice_tts_model_path: Path | None = None
     voice_tts_voice_path: Path | None = None
     voice_device: str = "cpu"
     voice_identity: str = "ULTRON"
-    voice_rate: float = 0.92
-    voice_pitch: float = 0.72
+    voice_rate: float = 0.94
+    voice_pitch: float = 0.86
     voice_volume: float = 0.95
     wake_word_provider: str = "text"
     wake_phrases: tuple[str, ...] = ("ultron", "hey ultron")
@@ -118,12 +123,24 @@ def _merge_json_config(config: UltronConfig, path: Path) -> UltronConfig:
             "voice_stt_provider",
             {"text_payload", "browser", "faster_whisper", "whisper_cpp", "mock"},
         )
+    if "voice_capture_provider" in raw:
+        updates["voice_capture_provider"] = _expect_choice(raw, "voice_capture_provider", {"browser", "sounddevice", "mock"})
+    if "voice_microphone_device" in raw:
+        value = raw["voice_microphone_device"]
+        updates["voice_microphone_device"] = None if value is None else _expect_plain_string(raw, "voice_microphone_device")
+    if "voice_sample_rate" in raw:
+        updates["voice_sample_rate"] = int(_expect_number(raw, "voice_sample_rate"))
+    if "voice_capture_seconds" in raw:
+        updates["voice_capture_seconds"] = _expect_number(raw, "voice_capture_seconds")
     if "voice_tts_provider" in raw:
         updates["voice_tts_provider"] = _expect_choice(
             raw,
             "voice_tts_provider",
             {"browser_speech_synthesis", "browser", "piper", "pyttsx3", "mock"},
         )
+    if "voice_stt_model" in raw:
+        value = raw["voice_stt_model"]
+        updates["voice_stt_model"] = None if value is None or value == "" else _expect_plain_string(raw, "voice_stt_model")
     if "voice_stt_model_path" in raw:
         updates["voice_stt_model_path"] = _resolve_optional_path(raw, "voice_stt_model_path", base)
     if "voice_tts_model_path" in raw:
@@ -183,12 +200,22 @@ def _merge_env_config(config: UltronConfig, env: Mapping[str, str], base_dir: Pa
             "ULTRON_STT_PROVIDER",
             {"text_payload", "browser", "faster_whisper", "whisper_cpp", "mock"},
         )
+    if "ULTRON_CAPTURE_PROVIDER" in env:
+        updates["voice_capture_provider"] = _parse_choice(env["ULTRON_CAPTURE_PROVIDER"], "ULTRON_CAPTURE_PROVIDER", {"browser", "sounddevice", "mock"})
+    if "ULTRON_MICROPHONE_DEVICE" in env:
+        updates["voice_microphone_device"] = env["ULTRON_MICROPHONE_DEVICE"]
+    if "ULTRON_VOICE_SAMPLE_RATE" in env:
+        updates["voice_sample_rate"] = int(env["ULTRON_VOICE_SAMPLE_RATE"])
+    if "ULTRON_VOICE_CAPTURE_SECONDS" in env:
+        updates["voice_capture_seconds"] = float(env["ULTRON_VOICE_CAPTURE_SECONDS"])
     if "ULTRON_TTS_PROVIDER" in env:
         updates["voice_tts_provider"] = _parse_choice(
             env["ULTRON_TTS_PROVIDER"],
             "ULTRON_TTS_PROVIDER",
             {"browser_speech_synthesis", "browser", "piper", "pyttsx3", "mock"},
         )
+    if "ULTRON_STT_MODEL" in env:
+        updates["voice_stt_model"] = env["ULTRON_STT_MODEL"]
     if "ULTRON_STT_MODEL_PATH" in env:
         updates["voice_stt_model_path"] = _resolve_path(Path(env["ULTRON_STT_MODEL_PATH"]), base_dir)
     if "ULTRON_TTS_MODEL_PATH" in env:
