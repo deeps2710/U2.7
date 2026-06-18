@@ -46,12 +46,51 @@ body {
   mask-image: radial-gradient(circle at 50% 42%, rgba(0, 0, 0, 0.2), rgba(0, 0, 0, 0.96) 62%);
 }
 
+.detail-toggle {
+  position: fixed;
+  top: 18px;
+  left: 18px;
+  z-index: 5;
+  width: 46px;
+  min-height: 46px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  gap: 0;
+  border-radius: 50%;
+  border-color: rgba(166, 255, 63, 0.46);
+  background: rgba(1, 13, 7, 0.76);
+  box-shadow: 0 0 24px rgba(0, 255, 102, 0.16), inset 0 0 14px rgba(0, 255, 102, 0.08);
+  backdrop-filter: blur(10px);
+}
+
+.detail-toggle span {
+  width: 18px;
+  height: 2px;
+  margin: -5px 0;
+  display: block;
+  background: var(--green-soft);
+  box-shadow: 0 0 8px rgba(0, 255, 102, 0.7);
+}
+
+.detail-toggle[aria-pressed="true"] span:nth-child(1) {
+  transform: translateY(7px) rotate(45deg);
+}
+
+.detail-toggle[aria-pressed="true"] span:nth-child(2) {
+  opacity: 0;
+}
+
+.detail-toggle[aria-pressed="true"] span:nth-child(3) {
+  transform: translateY(-7px) rotate(-45deg);
+}
+
 .shell {
   position: relative;
   z-index: 2;
   min-height: 100vh;
   display: grid;
-  grid-template-rows: auto minmax(440px, 46vh) auto auto auto auto auto auto;
+  grid-template-rows: auto minmax(400px, 42vh) auto auto auto auto auto auto auto;
   padding: 24px clamp(20px, 5vw, 72px) 22px;
 }
 
@@ -145,6 +184,45 @@ h1 {
   aspect-ratio: 1;
 }
 
+.mic-dock {
+  width: min(900px, 100%);
+  min-height: 78px;
+  margin: -8px auto 10px;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+.core-mic-button {
+  width: 70px;
+  min-height: 70px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border-color: rgba(166, 255, 63, 0.52);
+  background: rgba(0, 255, 102, 0.09);
+  box-shadow: 0 0 26px rgba(0, 255, 102, 0.18), inset 0 0 20px rgba(0, 255, 102, 0.08);
+  pointer-events: auto;
+}
+
+.core-mic-button svg {
+  width: 30px;
+  height: 30px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.core-mic-button.is-hot,
+.core-mic-button[aria-pressed="true"] {
+  color: #041208;
+  background: linear-gradient(180deg, var(--lime), var(--green));
+  box-shadow: 0 0 34px rgba(0, 255, 102, 0.45), 0 0 8px rgba(166, 255, 63, 0.3);
+}
+
 .subtitles {
   width: min(900px, 100%);
   min-height: 92px;
@@ -194,7 +272,7 @@ h1 {
 .provider-panel {
   min-height: 64px;
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.1fr) minmax(0, 1.1fr) 104px 116px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 96px 108px 104px;
   align-items: stretch;
 }
 
@@ -620,6 +698,47 @@ body.state-speaking .status-dot {
   background: #00ff88;
 }
 
+body.details-collapsed {
+  overflow: hidden;
+}
+
+body.details-collapsed .topbar,
+body.details-collapsed .detail-panel {
+  display: none;
+}
+
+body.details-collapsed .shell {
+  min-height: 100svh;
+  grid-template-rows: minmax(0, 1fr) auto;
+  padding: 0;
+}
+
+body.details-collapsed .stage {
+  min-height: 100svh;
+  padding-bottom: 90px;
+}
+
+body.details-collapsed .sphere-space {
+  width: min(48vw, 520px);
+  max-width: 520px;
+}
+
+body.details-collapsed .mic-dock {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 34px;
+  z-index: 4;
+  width: 100%;
+  min-height: 82px;
+  margin: 0;
+}
+
+body.details-collapsed .core-mic-button {
+  width: 78px;
+  min-height: 78px;
+}
+
 @media (max-width: 860px) {
   body {
     overflow: auto;
@@ -628,11 +747,11 @@ body.state-speaking .status-dot {
   .shell {
     min-height: 100svh;
     padding: 18px 14px;
-    grid-template-rows: auto minmax(500px, 54vh) auto auto auto auto auto auto;
+    grid-template-rows: auto minmax(430px, 48vh) auto auto auto auto auto auto auto;
   }
 
   .stage {
-    min-height: 500px;
+    min-height: 430px;
   }
 
   .topbar {
@@ -675,5 +794,14 @@ body.state-speaking .status-dot {
 
   .diagnostics-grid {
     grid-template-columns: 1fr;
+  }
+
+  body.details-collapsed .stage {
+    min-height: 100svh;
+    padding-bottom: 88px;
+  }
+
+  body.details-collapsed .sphere-space {
+    width: min(82vw, 360px);
   }
 }

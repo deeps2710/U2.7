@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from .models import Plan, RiskLevel, ToolCall
+from .secrets import get_secret
 from .tools import TOOL_SPECS, get_tool_spec, validate_tool_call
 
 
@@ -51,6 +52,52 @@ class OllamaProvider:
         content = message.get("content")
         if not isinstance(content, str):
             raise LLMPlannerError("Ollama response did not include message.content")
+        return content
+
+
+@dataclass(frozen=True)
+class GroqProvider:
+    endpoint: str
+    model: str
+    api_key: str | None = None
+
+    def complete(self, prompt: str, timeout: float) -> str:
+        key = self.api_key or get_secret("GROQ_API_KEY")
+        if not key:
+            raise LLMPlannerError("Groq API key is missing. Set GROQ_API_KEY.")
+        payload = {
+            "model": self.model,
+            "temperature": 0,
+            "max_tokens": 220,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+        }
+        request = urllib.request.Request(
+            _chat_completions_url(self.endpoint),
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "ultron27/0.1",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            raise LLMPlannerError(f"Groq request failed: {exc}") from exc
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise LLMPlannerError("Groq response did not include choices")
+        message = choices[0].get("message") if isinstance(choices[0], dict) else None
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, str):
+            raise LLMPlannerError("Groq response did not include choices[0].message.content")
         return content
 
 
@@ -198,3 +245,18 @@ def make_ollama_planner(endpoint: str, model: str, timeout: float) -> LLMPlanner
 
 def make_ollama_router(endpoint: str, model: str, timeout: float) -> SemanticIntentRouter:
     return SemanticIntentRouter(make_ollama_planner(endpoint, model, timeout))
+
+
+def make_groq_planner(endpoint: str, model: str, timeout: float) -> LLMPlanner:
+    return LLMPlanner(GroqProvider(endpoint=endpoint, model=model), timeout=timeout)
+
+
+def make_groq_router(endpoint: str, model: str, timeout: float) -> SemanticIntentRouter:
+    return SemanticIntentRouter(make_groq_planner(endpoint, model, timeout))
+
+
+def _chat_completions_url(endpoint: str) -> str:
+    base = endpoint.rstrip("/")
+    if base.endswith("/chat/completions"):
+        return base
+    return base + "/chat/completions"

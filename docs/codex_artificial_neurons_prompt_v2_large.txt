@@ -1,0 +1,107 @@
+Improve ULTRON with a larger neural intent-router trained on the 50,000-example synthetic dataset.
+
+Dataset:
+data/ultron_synthetic_training_dataset_v2_large_50000.jsonl
+
+Goal:
+Add a PyTorch-based neural router that predicts fast routing labels for ULTRON conversation/command handling.
+
+Important:
+The neural router is only a helper. It must never execute tools directly and must never bypass the existing safety pipeline.
+
+Safe pipeline:
+user input / voice transcript
+→ conversation manager
+→ neural router suggestion
+→ brain/runtime or existing deterministic planner
+→ typed tool call
+→ schema validation
+→ policy gate
+→ executor
+→ audit log
+→ response
+
+Model architecture:
+Use a larger model than the previous version:
+- tokenizer: simple BPE, wordpiece, or hashed tokenizer
+- max sequence length: 64 tokens
+- embedding dimension: 384
+- text encoder: BiGRU or lightweight Transformer encoder
+- hidden layer 1: 1024 artificial neurons
+- hidden layer 2: 512 artificial neurons
+- hidden layer 3: 256 artificial neurons
+- activation: GELU or ReLU
+- dropout: 0.20
+- output heads:
+  1. route classifier
+  2. intent classifier
+  3. tool_name classifier
+  4. risk_level classifier
+  5. requires_confirmation classifier
+
+Create:
+- src/ultron27/neural_router/__init__.py
+- src/ultron27/neural_router/dataset.py
+- src/ultron27/neural_router/model.py
+- src/ultron27/neural_router/train.py
+- src/ultron27/neural_router/predict.py
+- src/ultron27/neural_router/labels.py
+- tests/test_neural_router.py
+
+Use dataset fields:
+- utterance
+- cleaned_utterance
+- route
+- intent
+- tool_name
+- risk_level
+- requires_confirmation
+
+Training:
+- split train/validation
+- save label maps
+- save model to .ultron/models/neural_router.pt
+- report validation accuracy per output head
+- add a CLI/module command for training
+
+Prediction output:
+{
+  "route": "...",
+  "intent": "...",
+  "tool_name": "...",
+  "risk_level": "...",
+  "requires_confirmation": true,
+  "confidence": 0.0,
+  "source": "neural_router"
+}
+
+Config:
+- ULTRON_NEURAL_ROUTER_ENABLED=true/false
+- ULTRON_NEURAL_ROUTER_MODEL=.ultron/models/neural_router.pt
+- ULTRON_NEURAL_ROUTER_CONFIDENCE=0.72
+
+Integration:
+1. Keep current rule-based chat/memory routing first.
+2. Use neural router as a fast suggestion for command category/tool/risk.
+3. If confidence is low, fall back to the existing planner.
+4. If predicted risk is medium/high or requires_confirmation is true, require confirmation.
+5. Always validate any tool call through existing schema validation.
+6. Always pass through policy gate and audit logging.
+7. Never give the model raw shell access.
+
+Tests:
+- dataset loads
+- model forward pass works
+- training smoke test on small subset
+- prediction output has all heads
+- low confidence falls back
+- high-risk prediction requires confirmation
+- neural router never executes tools directly
+- existing tests still pass
+
+Acceptance criteria:
+- Training runs on the 50k dataset.
+- Model saves and loads.
+- Neural router predicts route/intent/tool/risk/confirmation.
+- Existing safe runtime is never bypassed.
+- High-risk actions still require explicit confirmation.

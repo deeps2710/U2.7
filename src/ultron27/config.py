@@ -30,6 +30,8 @@ class UltronConfig:
     llm_model: str = "qwen2.5:7b-instruct"
     llm_endpoint: str = "http://localhost:11434"
     llm_timeout_seconds: float = 8.0
+    neural_router_enabled: bool = False
+    neural_router_model: Path = Path(".ultron/models/neural_router.pt")
     voice_stt_provider: str = "text_payload"
     voice_capture_provider: str = "browser"
     voice_microphone_device: str | None = None
@@ -50,6 +52,14 @@ class UltronConfig:
     wake_model_path: Path | None = None
     vad_provider: str = "energy"
     vad_energy_threshold: float = 0.015
+    clap_spike_ratio: float = 7.0
+    clap_min_rms: float = 0.012
+    clap_min_gap_s: float = 0.05
+    clap_max_gap_s: float = 0.35
+    clap_cooldown_s: float = 0.45
+    clap_retrigger_ratio: float = 0.55
+    clap_noise_floor_alpha: float = 0.992
+    clap_quiet_gate_mult: float = 2.2
 
 
 def load_config(
@@ -110,18 +120,22 @@ def _merge_json_config(config: UltronConfig, path: Path) -> UltronConfig:
     if "planner_mode" in raw:
         updates["planner_mode"] = _expect_choice(raw, "planner_mode", {"rules", "hybrid", "llm"})
     if "llm_provider" in raw:
-        updates["llm_provider"] = _expect_choice(raw, "llm_provider", {"ollama"})
+        updates["llm_provider"] = _expect_choice(raw, "llm_provider", {"ollama", "groq"})
     if "llm_model" in raw:
         updates["llm_model"] = _expect_plain_string(raw, "llm_model")
     if "llm_endpoint" in raw:
         updates["llm_endpoint"] = _expect_plain_string(raw, "llm_endpoint")
     if "llm_timeout_seconds" in raw:
         updates["llm_timeout_seconds"] = _expect_number(raw, "llm_timeout_seconds")
+    if "neural_router_enabled" in raw:
+        updates["neural_router_enabled"] = _expect_bool(raw, "neural_router_enabled")
+    if "neural_router_model" in raw:
+        updates["neural_router_model"] = _resolve_path(_expect_string(raw, "neural_router_model"), base)
     if "voice_stt_provider" in raw:
         updates["voice_stt_provider"] = _expect_choice(
             raw,
             "voice_stt_provider",
-            {"text_payload", "browser", "faster_whisper", "whisper_cpp", "mock"},
+            {"text_payload", "browser", "faster_whisper", "whisper_cpp", "deepgram", "mock"},
         )
     if "voice_capture_provider" in raw:
         updates["voice_capture_provider"] = _expect_choice(raw, "voice_capture_provider", {"browser", "sounddevice", "mock"})
@@ -158,7 +172,7 @@ def _merge_json_config(config: UltronConfig, path: Path) -> UltronConfig:
     if "voice_volume" in raw:
         updates["voice_volume"] = _expect_number(raw, "voice_volume")
     if "wake_word_provider" in raw:
-        updates["wake_word_provider"] = _expect_choice(raw, "wake_word_provider", {"text", "openwakeword", "mock"})
+        updates["wake_word_provider"] = _expect_choice(raw, "wake_word_provider", {"text", "openwakeword", "double_clap", "mock"})
     if "wake_phrases" in raw:
         updates["wake_phrases"] = tuple(_expect_string_list(raw, "wake_phrases"))
     if "wake_model_path" in raw:
@@ -167,6 +181,22 @@ def _merge_json_config(config: UltronConfig, path: Path) -> UltronConfig:
         updates["vad_provider"] = _expect_choice(raw, "vad_provider", {"energy", "silero", "webrtc", "mock"})
     if "vad_energy_threshold" in raw:
         updates["vad_energy_threshold"] = _expect_number(raw, "vad_energy_threshold")
+    if "clap_spike_ratio" in raw:
+        updates["clap_spike_ratio"] = _expect_number(raw, "clap_spike_ratio")
+    if "clap_min_rms" in raw:
+        updates["clap_min_rms"] = _expect_number(raw, "clap_min_rms")
+    if "clap_min_gap_s" in raw:
+        updates["clap_min_gap_s"] = _expect_number(raw, "clap_min_gap_s")
+    if "clap_max_gap_s" in raw:
+        updates["clap_max_gap_s"] = _expect_number(raw, "clap_max_gap_s")
+    if "clap_cooldown_s" in raw:
+        updates["clap_cooldown_s"] = _expect_number(raw, "clap_cooldown_s")
+    if "clap_retrigger_ratio" in raw:
+        updates["clap_retrigger_ratio"] = _expect_number(raw, "clap_retrigger_ratio")
+    if "clap_noise_floor_alpha" in raw:
+        updates["clap_noise_floor_alpha"] = _expect_number(raw, "clap_noise_floor_alpha")
+    if "clap_quiet_gate_mult" in raw:
+        updates["clap_quiet_gate_mult"] = _expect_number(raw, "clap_quiet_gate_mult")
     return replace(config, **updates)
 
 
@@ -187,18 +217,22 @@ def _merge_env_config(config: UltronConfig, env: Mapping[str, str], base_dir: Pa
     if "ULTRON_PLANNER_MODE" in env:
         updates["planner_mode"] = _parse_choice(env["ULTRON_PLANNER_MODE"], "ULTRON_PLANNER_MODE", {"rules", "hybrid", "llm"})
     if "ULTRON_LLM_PROVIDER" in env:
-        updates["llm_provider"] = _parse_choice(env["ULTRON_LLM_PROVIDER"], "ULTRON_LLM_PROVIDER", {"ollama"})
+        updates["llm_provider"] = _parse_choice(env["ULTRON_LLM_PROVIDER"], "ULTRON_LLM_PROVIDER", {"ollama", "groq"})
     if "ULTRON_LLM_MODEL" in env:
         updates["llm_model"] = env["ULTRON_LLM_MODEL"]
     if "ULTRON_LLM_ENDPOINT" in env:
         updates["llm_endpoint"] = env["ULTRON_LLM_ENDPOINT"]
     if "ULTRON_LLM_TIMEOUT_SECONDS" in env:
         updates["llm_timeout_seconds"] = float(env["ULTRON_LLM_TIMEOUT_SECONDS"])
+    if "ULTRON_NEURAL_ROUTER_ENABLED" in env:
+        updates["neural_router_enabled"] = parse_bool(env["ULTRON_NEURAL_ROUTER_ENABLED"])
+    if "ULTRON_NEURAL_ROUTER_MODEL" in env:
+        updates["neural_router_model"] = _resolve_path(Path(env["ULTRON_NEURAL_ROUTER_MODEL"]), base_dir)
     if "ULTRON_STT_PROVIDER" in env:
         updates["voice_stt_provider"] = _parse_choice(
             env["ULTRON_STT_PROVIDER"],
             "ULTRON_STT_PROVIDER",
-            {"text_payload", "browser", "faster_whisper", "whisper_cpp", "mock"},
+            {"text_payload", "browser", "faster_whisper", "whisper_cpp", "deepgram", "mock"},
         )
     if "ULTRON_CAPTURE_PROVIDER" in env:
         updates["voice_capture_provider"] = _parse_choice(env["ULTRON_CAPTURE_PROVIDER"], "ULTRON_CAPTURE_PROVIDER", {"browser", "sounddevice", "mock"})
@@ -233,7 +267,7 @@ def _merge_env_config(config: UltronConfig, env: Mapping[str, str], base_dir: Pa
     if "ULTRON_VOICE_VOLUME" in env:
         updates["voice_volume"] = float(env["ULTRON_VOICE_VOLUME"])
     if "ULTRON_WAKE_WORD_PROVIDER" in env:
-        updates["wake_word_provider"] = _parse_choice(env["ULTRON_WAKE_WORD_PROVIDER"], "ULTRON_WAKE_WORD_PROVIDER", {"text", "openwakeword", "mock"})
+        updates["wake_word_provider"] = _parse_choice(env["ULTRON_WAKE_WORD_PROVIDER"], "ULTRON_WAKE_WORD_PROVIDER", {"text", "openwakeword", "double_clap", "mock"})
     if "ULTRON_WAKE_PHRASES" in env:
         updates["wake_phrases"] = tuple(item.strip() for item in env["ULTRON_WAKE_PHRASES"].split(";") if item.strip())
     if "ULTRON_WAKE_MODEL_PATH" in env:
@@ -242,6 +276,22 @@ def _merge_env_config(config: UltronConfig, env: Mapping[str, str], base_dir: Pa
         updates["vad_provider"] = _parse_choice(env["ULTRON_VAD_PROVIDER"], "ULTRON_VAD_PROVIDER", {"energy", "silero", "webrtc", "mock"})
     if "ULTRON_VAD_ENERGY_THRESHOLD" in env:
         updates["vad_energy_threshold"] = float(env["ULTRON_VAD_ENERGY_THRESHOLD"])
+    if "ULTRON_CLAP_SPIKE_RATIO" in env:
+        updates["clap_spike_ratio"] = float(env["ULTRON_CLAP_SPIKE_RATIO"])
+    if "ULTRON_CLAP_MIN_RMS" in env:
+        updates["clap_min_rms"] = float(env["ULTRON_CLAP_MIN_RMS"])
+    if "ULTRON_CLAP_MIN_GAP_S" in env:
+        updates["clap_min_gap_s"] = float(env["ULTRON_CLAP_MIN_GAP_S"])
+    if "ULTRON_CLAP_MAX_GAP_S" in env:
+        updates["clap_max_gap_s"] = float(env["ULTRON_CLAP_MAX_GAP_S"])
+    if "ULTRON_CLAP_COOLDOWN_S" in env:
+        updates["clap_cooldown_s"] = float(env["ULTRON_CLAP_COOLDOWN_S"])
+    if "ULTRON_CLAP_RETRIGGER_RATIO" in env:
+        updates["clap_retrigger_ratio"] = float(env["ULTRON_CLAP_RETRIGGER_RATIO"])
+    if "ULTRON_CLAP_NOISE_FLOOR_ALPHA" in env:
+        updates["clap_noise_floor_alpha"] = float(env["ULTRON_CLAP_NOISE_FLOOR_ALPHA"])
+    if "ULTRON_CLAP_QUIET_GATE_MULT" in env:
+        updates["clap_quiet_gate_mult"] = float(env["ULTRON_CLAP_QUIET_GATE_MULT"])
     return replace(config, **updates)
 
 

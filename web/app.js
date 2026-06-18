@@ -7,9 +7,11 @@ const subtitleText = document.getElementById("subtitleText");
 const subtitleToggle = document.getElementById("subtitleToggle");
 const commandInput = document.getElementById("commandInput");
 const sendButton = document.getElementById("sendButton");
+const detailToggle = document.getElementById("detailToggle");
 const statusLabel = document.getElementById("statusLabel");
 const voiceBadge = document.getElementById("voiceBadge");
 const micToggle = document.getElementById("micToggle");
+const coreMicButton = document.getElementById("coreMicButton");
 const backendCaptureButton = document.getElementById("backendCaptureButton");
 const alwaysListeningToggle = document.getElementById("alwaysListeningToggle");
 const pushToTalkToggle = document.getElementById("pushToTalkToggle");
@@ -25,6 +27,7 @@ const ttsProviderLabel = document.getElementById("ttsProviderLabel");
 const ttsProviderDetail = document.getElementById("ttsProviderDetail");
 const refreshProvidersButton = document.getElementById("refreshProvidersButton");
 const testProvidersButton = document.getElementById("testProvidersButton");
+const calibrateVoiceButton = document.getElementById("calibrateVoiceButton");
 const micStatusLabel = document.getElementById("micStatusLabel");
 const micPrivacyDetail = document.getElementById("micPrivacyDetail");
 const wakeStateLabel = document.getElementById("wakeStateLabel");
@@ -85,6 +88,7 @@ let providerStatus = null;
 let alwaysListening = false;
 let pendingConfirmation = null;
 let memoryEnabled = true;
+let detailsCollapsed = window.localStorage.getItem("ultronDetailsCollapsed") !== "false";
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
@@ -184,6 +188,7 @@ fill.intensity = 0;
 const armillaryCore = createArmillaryCore({ scene, camera, renderer });
 
 setVisualState("idle", { sync: false });
+setDetailsCollapsed(detailsCollapsed);
 loadStatus();
 loadProviders();
 setupSpeechRecognition();
@@ -205,6 +210,24 @@ subtitleToggle.addEventListener("click", async () => {
   } catch {
     // The local visual toggle should keep working even if the API is not ready.
   }
+});
+
+detailToggle.addEventListener("click", () => setDetailsCollapsed(!detailsCollapsed));
+
+coreMicButton.addEventListener("click", () => {
+  if (micEnabled || recognitionActive || alwaysListening) {
+    if (alwaysListening) {
+      stopAlwaysListening();
+    } else {
+      stopVoiceInput();
+    }
+    return;
+  }
+  if (providerStatus?.active?.capture === "sounddevice") {
+    captureBackendVoice();
+    return;
+  }
+  startVoiceInput();
 });
 
 micToggle.addEventListener("click", () => {
@@ -251,6 +274,7 @@ mockVoiceButton.addEventListener("click", () =>
 );
 refreshProvidersButton.addEventListener("click", loadProviders);
 testProvidersButton.addEventListener("click", testVoiceProviders);
+calibrateVoiceButton.addEventListener("click", calibrateVoice);
 approveConfirmationButton.addEventListener("click", approvePendingConfirmation);
 cancelConfirmationButton.addEventListener("click", cancelPendingConfirmation);
 knowledgeSearchButton.addEventListener("click", searchKnowledge);
@@ -459,6 +483,28 @@ async function testVoiceProviders() {
     scheduleListeningReturn();
   } catch {
     setSubtitle("Voice provider test could not reach the ULTRON runtime.");
+    setVisualState("idle");
+  }
+}
+
+async function calibrateVoice() {
+  setVisualState("listening");
+  setSubtitle("Calibrating microphone. Speak normally for a moment.");
+  voiceBadge.textContent = "Calibrating";
+  try {
+    const warmup = await postJson("/api/voice/warmup", {});
+    providerStatus = warmup;
+    applyProviders(warmup);
+    const payload = await postJson("/api/voice/calibrate", { seconds: 2.5 });
+    applyVoiceStatus(payload.voice);
+    applyWakeStatus(payload.wake);
+    applyVoiceDiagnostics(payload.voice_diagnostics);
+    await loadProviders();
+    setSubtitle(payload.message || "Voice calibration completed.");
+    setVisualState("speaking");
+    scheduleListeningReturn();
+  } catch {
+    setSubtitle("Voice calibration could not reach the ULTRON runtime.");
     setVisualState("idle");
   }
 }
@@ -734,9 +780,19 @@ function setVisualState(state, options = {}) {
   if (!stateTargets[state]) state = "idle";
   visualState = state;
   armillaryCore.setState(state);
-  document.body.className = `state-${state}`;
+  document.body.classList.remove(
+    "state-inactive",
+    "state-idle",
+    "state-waiting_for_wake_word",
+    "state-listening",
+    "state-transcribing",
+    "state-thinking",
+    "state-speaking"
+  );
+  document.body.classList.add(`state-${state}`);
   statusLabel.textContent = displayState(state);
   stateButtons.forEach((button) => button.classList.toggle("is-active", button.dataset.state === state));
+  refreshCoreMicButton();
   if (options.sync !== false) {
     fetch("/api/state", {
       method: "POST",
@@ -744,6 +800,15 @@ function setVisualState(state, options = {}) {
       body: JSON.stringify({ state }),
     }).catch(() => {});
   }
+}
+
+function setDetailsCollapsed(collapsed) {
+  detailsCollapsed = Boolean(collapsed);
+  document.body.classList.toggle("details-collapsed", detailsCollapsed);
+  armillaryCore.setLayoutMode(detailsCollapsed ? "compact" : "full");
+  detailToggle.setAttribute("aria-pressed", String(detailsCollapsed));
+  detailToggle.setAttribute("aria-label", detailsCollapsed ? "Show detailed panels" : "Hide detailed panels");
+  window.localStorage.setItem("ultronDetailsCollapsed", String(detailsCollapsed));
 }
 
 function setSubtitle(text) {
@@ -786,6 +851,7 @@ function applyVoiceStatus(status) {
     sttProviderLabel.textContent = status.stt_provider || "text_payload";
     ttsProviderLabel.textContent = status.tts_provider || "browser_speech_synthesis";
   }
+  refreshCoreMicButton();
 }
 
 function applyVoiceDiagnostics(diagnostics) {
@@ -851,6 +917,16 @@ function applyProviders(payload) {
   ttsProviderDetail.textContent = providerDetail(configuredTts, activeTts, ttsHealth);
   captureProviderDetail.textContent = providerDetail(configuredCapture, activeCapture, captureHealth);
   applyVoiceDiagnostics(payload.voice_diagnostics);
+  refreshCoreMicButton();
+}
+
+function refreshCoreMicButton() {
+  if (!coreMicButton) return;
+  const active = micEnabled || recognitionActive || alwaysListening || visualState === "listening" || visualState === "transcribing";
+  coreMicButton.classList.toggle("is-hot", active);
+  coreMicButton.setAttribute("aria-pressed", String(active));
+  coreMicButton.setAttribute("aria-label", active ? "Mute microphone" : "Unmute microphone");
+  coreMicButton.title = active ? "Mute microphone" : "Unmute microphone";
 }
 
 function providerDetail(configured, active, health) {

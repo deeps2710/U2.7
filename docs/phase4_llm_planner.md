@@ -7,7 +7,7 @@ Phase 4 adds an optional LLM planning layer while preserving ULTRON's safety arc
 - `src/ultron27/llm.py`
   - JSON tool-call parser
   - `LLMPlanner`
-  - Ollama provider
+  - Ollama and Groq providers
   - prompt builder from the allowlisted tool registry
 - CLI planner modes:
   - `rules`
@@ -29,7 +29,7 @@ The LLM is only a planner. Every proposed call still passes through:
 LLM JSON -> ToolCall -> schema validation -> policy -> executor
 ```
 
-Invalid JSON, unknown tools, missing arguments, extra arguments, and invalid numeric ranges are rejected before execution. If Ollama is not running, ULTRON reports the LLM error in the runtime trace and falls back safely.
+Invalid JSON, unknown tools, missing arguments, extra arguments, and invalid numeric ranges are rejected before execution. If the configured provider is unavailable, ULTRON reports the LLM error in the runtime trace and falls back safely.
 
 ## Example
 
@@ -61,5 +61,5 @@ tool_accuracy: 1.0
 policy_action_accuracy: 1.0
 ```
 
-The local test environment did not have an Ollama server running, so CLI LLM mode was also tested for safe provider failure behavior.
+The local test environment did not have a live provider running, so CLI LLM mode was also tested for safe provider failure behavior.
 

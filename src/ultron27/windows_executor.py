@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import platform
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -14,6 +15,8 @@ DEFAULT_WINDOWS_APP_ALIASES = {
     "calc": "calc.exe",
     "chrome": "chrome.exe",
     "google chrome": "chrome.exe",
+    "cursor": "cursor",
+    "cursor editor": "cursor",
     "explorer": "explorer.exe",
     "file explorer": "explorer.exe",
     "notepad": "notepad.exe",
@@ -196,7 +199,7 @@ def resolve_app_alias(app: str, aliases: dict[str, str]) -> str | None:
     target = aliases.get(key)
     if not target or not _safe_launch_target(target):
         return None
-    return target
+    return _resolve_special_target(key, target)
 
 
 def _merge_aliases(defaults: dict[str, str], custom: dict[str, str] | None = None) -> dict[str, str]:
@@ -213,6 +216,25 @@ def _safe_launch_target(target: str) -> bool:
     if not target.strip() or any(char in target for char in _BLOCKED_TARGET_CHARS):
         return False
     return True
+
+
+def _resolve_special_target(key: str, target: str) -> str:
+    if key in {"cursor", "cursor editor"} and target.strip().lower() == "cursor":
+        return _cursor_executable() or target
+    return target
+
+
+def _cursor_executable() -> str | None:
+    if not is_windows():
+        return shutil.which("cursor")
+    local = os.environ.get("LOCALAPPDATA", "")
+    for relative in (("Programs", "cursor", "Cursor.exe"), ("Programs", "Cursor", "Cursor.exe")):
+        if not local:
+            continue
+        candidate = Path(local).joinpath(*relative)
+        if candidate.is_file():
+            return str(candidate)
+    return shutil.which("cursor")
 
 
 def _spawn_process(target: str, success_message: str, changed: dict[str, str]) -> ToolResult:

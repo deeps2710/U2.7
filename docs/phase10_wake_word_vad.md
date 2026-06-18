@@ -71,6 +71,7 @@ Wake providers:
 |---|---|
 | `text` | Working local fallback that detects wake phrases in transcript payloads. |
 | `openwakeword` | Health-checked adapter for future openWakeWord model use. |
+| `double_clap` | Adaptive energy-spike gate that detects two claps and opens listening mode only. |
 | `mock` | Deterministic tests. |
 
 VAD providers:
@@ -90,9 +91,16 @@ VAD providers:
   "wake_phrases": ["ULTRON", "Hey ULTRON"],
   "wake_model_path": null,
   "vad_provider": "energy",
-  "vad_energy_threshold": 0.015
+  "vad_energy_threshold": 0.015,
+  "clap_spike_ratio": 7.0,
+  "clap_min_rms": 0.012,
+  "clap_min_gap_s": 0.05,
+  "clap_max_gap_s": 0.35,
+  "clap_cooldown_s": 0.45
 }
 ```
+
+The `double_clap` provider adapts the reviewed Jarvis script's useful local logic: adaptive noise floor, spike thresholding, clap gap bounds, retrigger arming, and cooldown. It deliberately excludes ElevenLabs and one-off app launch sequencing. A detected double clap only changes ULTRON into `listening`; the next command still goes through STT, planning, validation, policy, executor, and audit logging.
 
 Environment overrides:
 

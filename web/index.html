@@ -9,6 +9,11 @@
   <body>
     <canvas id="ultron-scene" aria-label="ULTRON animated plasma sphere"></canvas>
     <div class="digital-noise" aria-hidden="true"></div>
+    <button id="detailToggle" class="detail-toggle" type="button" aria-pressed="false" aria-label="Hide detailed panels">
+      <span></span>
+      <span></span>
+      <span></span>
+    </button>
     <main class="shell">
       <header class="topbar">
         <div>
@@ -29,7 +34,18 @@
         <div class="sphere-space"></div>
       </section>
 
-      <section class="subtitles" id="subtitlePanel" aria-live="polite">
+      <section class="mic-dock" aria-label="Core microphone control">
+        <button id="coreMicButton" class="core-mic-button" type="button" aria-pressed="false" aria-label="Start microphone capture">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z"></path>
+            <path d="M5 11a7 7 0 0 0 14 0"></path>
+            <path d="M12 18v3"></path>
+            <path d="M8 21h8"></path>
+          </svg>
+        </button>
+      </section>
+
+      <section class="subtitles detail-panel" id="subtitlePanel" aria-live="polite">
         <div class="subtitle-header">
           <span>Live subtitles</span>
           <button id="subtitleToggle" type="button" aria-pressed="true">On</button>
@@ -37,7 +53,7 @@
         <p id="subtitleText">ULTRON 2.7 online.</p>
       </section>
 
-      <section class="voice-console" aria-label="Voice controls">
+      <section class="voice-console detail-panel" aria-label="Voice controls">
         <button id="micToggle" type="button">Mic On</button>
         <button id="backendCaptureButton" type="button">Backend Mic</button>
         <button id="alwaysListeningToggle" type="button" aria-pressed="false">Always Off</button>
@@ -48,7 +64,7 @@
         <button id="mockVoiceButton" type="button">Mock Voice</button>
       </section>
 
-      <section class="provider-panel" aria-label="Voice provider status">
+      <section class="provider-panel detail-panel" aria-label="Voice provider status">
         <div>
           <span>STT</span>
           <strong id="sttProviderLabel">text_payload</strong>
@@ -66,9 +82,10 @@
         </div>
         <button id="refreshProvidersButton" type="button">Refresh</button>
         <button id="testProvidersButton" type="button">Test Voice</button>
+        <button id="calibrateVoiceButton" type="button">Calibrate</button>
       </section>
 
-      <section class="wake-panel" aria-label="Wake word and voice activity status">
+      <section class="wake-panel detail-panel" aria-label="Wake word and voice activity status">
         <div>
           <span>Microphone</span>
           <strong id="micStatusLabel">Off</strong>
@@ -86,7 +103,7 @@
         </div>
       </section>
 
-      <section class="voice-diagnostics" aria-label="Voice diagnostics">
+      <section class="voice-diagnostics detail-panel" aria-label="Voice diagnostics">
         <div>
           <span>Understood</span>
           <strong id="lastTranscriptLabel">None</strong>
@@ -99,12 +116,12 @@
         </div>
       </section>
 
-      <section class="command-row" aria-label="Command input">
+      <section class="command-row detail-panel" aria-label="Command input">
         <input id="commandInput" type="text" autocomplete="off" placeholder="Type a command for ULTRON..." />
         <button id="sendButton" type="button">Send</button>
       </section>
 
-      <section class="phase12-grid" aria-label="Skills, knowledge, and task history">
+      <section class="phase12-grid detail-panel" aria-label="Skills, knowledge, and task history">
         <div class="phase12-panel">
           <div class="history-header">Skills</div>
           <ul id="skillsList" class="compact-list"></ul>
@@ -128,12 +145,12 @@
         </div>
       </section>
 
-      <section class="voice-history" aria-label="Voice transcript history">
+      <section class="voice-history detail-panel" aria-label="Voice transcript history">
         <div class="history-header">Conversation history</div>
         <ol id="voiceHistory"></ol>
       </section>
 
-      <nav class="state-controls" aria-label="Visual state controls">
+      <nav class="state-controls detail-panel" aria-label="Visual state controls">
         <button data-state="listening" type="button">Listening</button>
         <button data-state="thinking" type="button">Thinking</button>
         <button data-state="speaking" type="button">Speaking</button>

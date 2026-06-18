@@ -16,16 +16,17 @@ The repo is built around the supplied research paper and synthetic laptop-comman
 - Dataset evaluation script for tool-name, argument, and confirmation-gate accuracy.
 - Dataset quality analyzer for duplicate-label conflicts, underspecified commands, and safety case extraction.
 - Safety regression evaluator for high-risk and confirmation-gated examples.
-- Optional LLM planner adapter with Ollama support, strict JSON parsing, schema validation, and safe fallback behavior.
+- Optional LLM planner adapter with Ollama or Groq support, strict JSON parsing, schema validation, and safe fallback behavior.
 - Interactive assistant console for repeated commands, confirmations, and JSON inspection.
 - Agentic brain layer for multi-step task planning, safe execution, and non-sensitive memory.
 - Conversation manager with fast chat routing, clarification behavior, and a consistent calm assistant personality.
+- Optional PyTorch neural intent-router training path using the 50,000-example ULTRON synthetic dataset.
 - Cyberpunk green plasma-sphere web interface backed by the local brain/runtime API.
 - Voice mode with transcript cleanup, confidence handling, speech synthesis, transcript history, mute, push-to-talk, and confirmation controls.
 - Offline-first voice provider layer with faster-whisper, whisper.cpp, Piper, and pyttsx3 adapters plus browser/mock fallbacks.
 - Wake-word and voice activity gates for always-listening mode, with push-to-talk still available.
 - Backend microphone capture abstraction with sounddevice/mock/browser capture providers and voice diagnostics.
-- Semantic local-LLM intent routing through Ollama, with strict typed JSON validation and clarification fallback.
+- Semantic LLM intent routing through Ollama or Groq, with strict typed JSON validation and clarification fallback.
 - Windows automation executor pack with app aliases, safe-root file enforcement, confirmation modal support, and audit viewing.
 - Skill registry and local knowledge base for reusable safe capabilities and document-grounded project context.
 - Beta-ready local prototype tooling for setup, launch, diagnostics, demos, and verification.
@@ -72,6 +73,30 @@ python scripts/demo_phase13.py
 python scripts/verify_phase13.py
 python -m unittest discover -s tests
 ```
+
+## Optional Neural Router
+
+The larger synthetic router dataset lives at:
+
+```text
+data/ultron_synthetic_training_dataset_v2_large_50000.jsonl
+```
+
+Train the advisory neural router with:
+
+```powershell
+pip install -e .[neural]
+python -m ultron27.neural_router.train --dataset data/ultron_synthetic_training_dataset_v2_large_50000.jsonl --output .ultron/models/neural_router.pt
+```
+
+Then enable it with either config or environment variables:
+
+```powershell
+$env:ULTRON_NEURAL_ROUTER_ENABLED = "true"
+$env:ULTRON_NEURAL_ROUTER_MODEL = ".ultron/models/neural_router.pt"
+```
+
+The neural router only predicts route, intent, tool name, risk, and confirmation labels. It never executes tools directly and never bypasses schema validation, policy gates, executor safety checks, or audit logging.
 
 If the `ultron` command is not available after installation, use:
 
@@ -129,7 +154,12 @@ ULTRON looks for `ultron.config.json` first, then `.ultron/config.json`. You can
   "wake_phrases": ["ULTRON", "Hey ULTRON"],
   "wake_model_path": null,
   "vad_provider": "energy",
-  "vad_energy_threshold": 0.015
+  "vad_energy_threshold": 0.015,
+  "clap_spike_ratio": 7.0,
+  "clap_min_rms": 0.012,
+  "clap_min_gap_s": 0.05,
+  "clap_max_gap_s": 0.35,
+  "clap_cooldown_s": 0.45
 }
 ```
 
@@ -140,6 +170,7 @@ $env:ULTRON_DRY_RUN = "true"
 $env:ULTRON_AUDIT_LOG = ".ultron/audit.jsonl"
 $env:ULTRON_SAFE_ROOTS = ".;~/Desktop;~/Documents;~/Downloads"
 $env:ULTRON_PLANNER_MODE = "rules"
+$env:ULTRON_LLM_PROVIDER = "ollama"
 $env:ULTRON_LLM_MODEL = "qwen2.5:7b-instruct"
 $env:ULTRON_LLM_ENDPOINT = "http://localhost:11434"
 $env:ULTRON_STT_PROVIDER = "browser"
@@ -157,6 +188,18 @@ $env:ULTRON_WAKE_WORD_PROVIDER = "text"
 $env:ULTRON_WAKE_PHRASES = "ULTRON;Hey ULTRON"
 $env:ULTRON_VAD_PROVIDER = "energy"
 $env:ULTRON_VAD_ENERGY_THRESHOLD = "0.015"
+```
+
+For the cloud-backed setup, use Groq for planning and Deepgram for speech-to-text:
+
+```powershell
+[Environment]::SetEnvironmentVariable("GROQ_API_KEY", "your-groq-key", "User")
+[Environment]::SetEnvironmentVariable("DEEPGRAM_API_KEY", "your-deepgram-key", "User")
+$env:ULTRON_LLM_PROVIDER = "groq"
+$env:ULTRON_LLM_MODEL = "openai/gpt-oss-20b"
+$env:ULTRON_LLM_ENDPOINT = "https://api.groq.com/openai/v1"
+$env:ULTRON_STT_PROVIDER = "deepgram"
+$env:ULTRON_STT_MODEL = "nova-3"
 ```
 
 Useful CLI flags:
@@ -420,7 +463,7 @@ The voice diagnostics panel shows the capture provider, STT provider, active mic
 
 ## Phase 15 Semantic Intent Routing
 
-Phase 15 strengthens natural-language understanding with a local Ollama semantic router. The fast rules still handle obvious commands first. If a command is unsupported by rules and `planner_mode` is `hybrid` or `llm`, ULTRON asks the local model to return one strict JSON tool call.
+Phase 15 strengthens natural-language understanding with a semantic router. The fast rules still handle obvious commands first. If a command is unsupported by rules and `planner_mode` is `hybrid` or `llm`, ULTRON asks the configured Ollama or Groq model to return one strict JSON tool call.
 
 The model can only propose typed tools:
 
@@ -437,7 +480,7 @@ The model can only propose typed tools:
 }
 ```
 
-Invalid JSON, unknown tools, invalid arguments, and low confidence are rejected or converted into `ask_clarification`. Ollama unavailability does not crash ULTRON; it falls back to the safe rules result.
+Invalid JSON, unknown tools, invalid arguments, and low confidence are rejected or converted into `ask_clarification`. Provider unavailability does not crash ULTRON; it falls back to the safe rules result.
 
 ## Phase 9 Offline Voice Providers
 
@@ -451,8 +494,8 @@ python scripts/run_phase9_voice_ui.py --port 8765
 
 Provider choices:
 
-- `voice_stt_provider`: `browser`, `text_payload`, `faster_whisper`, `whisper_cpp`, or `mock`.
-- `voice_stt_model`: faster-whisper model name such as `base.en`; used only by the faster-whisper provider.
+- `voice_stt_provider`: `browser`, `text_payload`, `faster_whisper`, `whisper_cpp`, `deepgram`, or `mock`.
+- `voice_stt_model`: faster-whisper model name such as `base.en`, or Deepgram model name such as `nova-3`.
 - `voice_tts_provider`: `browser_speech_synthesis`, `piper`, `pyttsx3`, or `mock`.
 - `voice_stt_model_path`: local faster-whisper or whisper.cpp model path.
 - `voice_tts_model_path`: local Piper model path.
@@ -489,11 +532,12 @@ inactive -> waiting_for_wake_word -> listening -> transcribing
 
 Wake/VAD providers:
 
-- `wake_word_provider`: `text`, `openwakeword`, or `mock`.
+- `wake_word_provider`: `text`, `openwakeword`, `double_clap`, or `mock`.
 - `wake_phrases`: defaults to `ULTRON` and `Hey ULTRON`.
 - `wake_model_path`: optional openWakeWord model path.
 - `vad_provider`: `energy`, `silero`, `webrtc`, or `mock`.
 - `vad_energy_threshold`: fallback energy threshold for noisy/empty input.
+- `double_clap`: optional adaptive energy-spike wake gate inspired by the reviewed Jarvis script. It only opens listening mode and never executes actions directly.
 
 Wake API endpoints:
 

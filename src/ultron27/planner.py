@@ -281,6 +281,6 @@ def _normalize_app_alias_words(text: str) -> str:
         "basic text editor": "notepad",
     }
     value = text
-    for source, target in replacements.items():
+    for source, target in sorted(replacements.items(), key=lambda item: len(item[0]), reverse=True):
         value = re.sub(rf"\b{re.escape(source)}\b", target, value)
     return value

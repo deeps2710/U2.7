@@ -91,7 +91,7 @@ backend/browser/mock microphone -> audio diagnostics -> STT
 
 Capture providers can record or supply audio/transcript payloads, but they cannot execute tasks. Empty, noisy, or too-short audio is rejected before command execution. Low-confidence transcripts become clarification prompts.
 
-Phase 15 adds semantic local-LLM intent routing through Ollama:
+Phase 15 adds semantic LLM intent routing through Ollama or Groq:
 
 ```text
 fast rules -> optional semantic router -> typed JSON tool proposal
@@ -257,7 +257,7 @@ These diagnostics are visible through `GET /api/voice/status`, `GET /api/voice/p
 
 ## Phase 15 Semantic Router Boundary
 
-The semantic router lives in `src/ultron27/llm.py`. It uses local Ollama only to propose structured JSON:
+The semantic router lives in `src/ultron27/llm.py`. It uses the configured Ollama or Groq provider only to propose structured JSON:
 
 ```json
 {"intent":"open_app","tool_name":"open_application","tool_arguments":{"app":"notepad"},"confidence":0.92}

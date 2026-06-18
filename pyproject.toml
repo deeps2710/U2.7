@@ -14,6 +14,7 @@ dependencies = []
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 voice = ["faster-whisper>=1.1.0", "sounddevice>=0.4.6"]
+neural = ["torch>=2.3"]
 
 [project.scripts]
 ultron = "ultron27.cli:main"

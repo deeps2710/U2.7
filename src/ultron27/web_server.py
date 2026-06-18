@@ -260,6 +260,16 @@ class WebState:
         text = str(payload.get("text") or "ULTRON voice provider test.")
         return self.snapshot(self.voice.test_tts(text))
 
+    def voice_calibrate(self, payload: dict[str, Any]) -> dict[str, Any]:
+        result = self.voice.calibrate_microphone(payload)
+        self.last_subtitle = str(result.get("message") or "Voice calibration completed.")
+        return self.snapshot(result)
+
+    def voice_warmup(self) -> dict[str, Any]:
+        stt = self.voice.stt
+        health = stt.warm_up() if hasattr(stt, "warm_up") else self.voice.providers_status()["providers"]["active_stt"]
+        return self.snapshot({"status": "ok", "stt": health.to_dict() if hasattr(health, "to_dict") else health, **self.voice.providers_status()})
+
     def speak(self, payload: dict[str, Any]) -> dict[str, Any]:
         action = str(payload.get("action", "speak"))
         if action == "stop":
@@ -435,6 +445,12 @@ def make_handler(state: WebState, web_root: Path = WEB_ROOT) -> type[BaseHTTPReq
                 return
             if parsed.path == "/api/voice/test-tts":
                 self._json(state.voice_test_tts(body))
+                return
+            if parsed.path == "/api/voice/calibrate":
+                self._json(state.voice_calibrate(body))
+                return
+            if parsed.path == "/api/voice/warmup":
+                self._json(state.voice_warmup())
                 return
             if parsed.path == "/api/wake/start":
                 self._json(state.wake_start())

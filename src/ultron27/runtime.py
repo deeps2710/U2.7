@@ -8,11 +8,12 @@ from typing import Any
 from .audit import append_audit_record
 from .config import UltronConfig
 from .executor import Executor
-from .llm import LLMPlannerError, make_ollama_router
+from .llm import LLMPlannerError, make_groq_router, make_ollama_router
 from .planner import DatasetPlanner
 from .policy import decide
 from .models import Plan, RiskLevel, ToolCall
 from .tools import get_tool_spec, validate_tool_call
+from .windows_executor import merge_windows_app_aliases, resolve_app_alias
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,9 @@ class RuntimeSettings:
     llm_model: str
     llm_endpoint: str
     llm_timeout_seconds: float
+    llm_provider: str = "ollama"
+    neural_router_enabled: bool = False
+    neural_router_model: Path = Path(".ultron/models/neural_router.pt")
     execute_requested: bool = False
     write_audit: bool = True
 
@@ -58,6 +62,9 @@ class RuntimeSettings:
             llm_model=llm_model or config.llm_model,
             llm_endpoint=llm_endpoint or config.llm_endpoint,
             llm_timeout_seconds=config.llm_timeout_seconds,
+            llm_provider=config.llm_provider,
+            neural_router_enabled=config.neural_router_enabled,
+            neural_router_model=config.neural_router_model,
             execute_requested=execute_requested,
             write_audit=write_audit,
         )
@@ -73,12 +80,11 @@ class UltronAssistant:
     def handle(self, utterance: str, *, confirmed: bool = False) -> dict[str, Any]:
         plan = self.planner.plan(utterance)
         llm_trace: dict[str, Any] = {"attempted": False, "error": None}
-        if self.settings.planner_mode in {"hybrid", "llm"} and (
-            self.settings.planner_mode == "llm" or plan.source == "fallback"
-        ):
+        if self.settings.planner_mode in {"hybrid", "llm"} and self._should_try_llm(plan):
             llm_trace["attempted"] = True
             try:
-                router = make_ollama_router(
+                router_factory = make_groq_router if self.settings.llm_provider == "groq" else make_ollama_router
+                router = router_factory(
                     endpoint=self.settings.llm_endpoint,
                     model=self.settings.llm_model,
                     timeout=self.settings.llm_timeout_seconds,
@@ -90,6 +96,17 @@ class UltronAssistant:
                     plan = self.planner.plan(utterance)
 
         return self._execute_plan(utterance, plan, confirmed=confirmed, llm_trace=llm_trace)
+
+    def _should_try_llm(self, plan: Plan) -> bool:
+        if self.settings.planner_mode == "llm":
+            return True
+        if plan.source == "fallback":
+            return True
+        if plan.source == "regex" and plan.tool_call.name == "open_application":
+            aliases = merge_windows_app_aliases(self.settings.app_aliases or {})
+            app = str(plan.tool_call.arguments.get("app", ""))
+            return resolve_app_alias(app, aliases) is None
+        return False
 
     def handle_tool_call(
         self,
@@ -163,6 +180,7 @@ class UltronAssistant:
                 "workspace": str(self.settings.workspace),
                 "safe_roots": [str(root) for root in self.settings.safe_roots],
                 "planner_mode": self.settings.planner_mode,
+                "llm_provider": self.settings.llm_provider,
                 "llm": llm_trace,
                 "python": sys.version.split()[0],
                 "platform": sys.platform,

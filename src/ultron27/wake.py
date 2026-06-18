@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import re
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -32,6 +33,14 @@ class WakeGateConfig:
     wake_model_path: Path | None = None
     vad_provider: str = "energy"
     vad_energy_threshold: float = 0.015
+    clap_spike_ratio: float = 7.0
+    clap_min_rms: float = 0.012
+    clap_min_gap_s: float = 0.05
+    clap_max_gap_s: float = 0.35
+    clap_cooldown_s: float = 0.45
+    clap_retrigger_ratio: float = 0.55
+    clap_noise_floor_alpha: float = 0.992
+    clap_quiet_gate_mult: float = 2.2
 
     @classmethod
     def from_config(cls, config: Any) -> "WakeGateConfig":
@@ -41,6 +50,14 @@ class WakeGateConfig:
             wake_model_path=getattr(config, "wake_model_path", None),
             vad_provider=str(getattr(config, "vad_provider", cls.vad_provider)).lower(),
             vad_energy_threshold=float(getattr(config, "vad_energy_threshold", cls.vad_energy_threshold)),
+            clap_spike_ratio=float(getattr(config, "clap_spike_ratio", cls.clap_spike_ratio)),
+            clap_min_rms=float(getattr(config, "clap_min_rms", cls.clap_min_rms)),
+            clap_min_gap_s=float(getattr(config, "clap_min_gap_s", cls.clap_min_gap_s)),
+            clap_max_gap_s=float(getattr(config, "clap_max_gap_s", cls.clap_max_gap_s)),
+            clap_cooldown_s=float(getattr(config, "clap_cooldown_s", cls.clap_cooldown_s)),
+            clap_retrigger_ratio=float(getattr(config, "clap_retrigger_ratio", cls.clap_retrigger_ratio)),
+            clap_noise_floor_alpha=float(getattr(config, "clap_noise_floor_alpha", cls.clap_noise_floor_alpha)),
+            clap_quiet_gate_mult=float(getattr(config, "clap_quiet_gate_mult", cls.clap_quiet_gate_mult)),
         )
 
 
@@ -150,6 +167,79 @@ class OpenWakeWordProvider(TextWakeWordProvider):
         return GateProviderHealth("wake", self.name, configured=True, active=True, available=True, detail="openWakeWord is available; transcript fallback remains enabled.")
 
 
+class DoubleClapWakeProvider:
+    """Adaptive double-clap detector for energy-only wake events.
+
+    This ports the useful part of the reference Jarvis script into ULTRON's
+    provider boundary. It only authorizes listening; it never executes actions.
+    """
+
+    name = "double_clap"
+
+    def __init__(self, config: WakeGateConfig | None = None) -> None:
+        self.config = config or WakeGateConfig(wake_word_provider="double_clap")
+        self.noise_floor = 1e-4
+        self.last_logged_double = 0.0
+        self.first_clap_time: float | None = None
+        self.spike_armed = True
+        self.last_threshold = max(self.noise_floor * self.config.clap_spike_ratio, self.config.clap_min_rms)
+
+    def detect(self, payload: dict[str, Any]) -> WakeWordResult:
+        text_result = TextWakeWordProvider(self.config.wake_phrases).detect(payload)
+        if text_result.detected:
+            text_result.provider = self.name
+            return text_result
+
+        level = _payload_energy(payload)
+        if level is None:
+            return WakeWordResult(False, provider=self.name)
+
+        now = _payload_timestamp(payload)
+        quiet_gate = self.noise_floor * self.config.clap_quiet_gate_mult
+        if level < quiet_gate:
+            alpha = _clamp_float(self.config.clap_noise_floor_alpha, 0.0, 0.9999)
+            self.noise_floor = alpha * self.noise_floor + (1.0 - alpha) * level
+            self.noise_floor = max(self.noise_floor, 1e-7)
+
+        threshold = max(self.noise_floor * self.config.clap_spike_ratio, self.config.clap_min_rms)
+        self.last_threshold = threshold
+        if level < threshold * self.config.clap_retrigger_ratio:
+            self.spike_armed = True
+
+        if not self.spike_armed or level < threshold or (now - self.last_logged_double) < self.config.clap_cooldown_s:
+            return WakeWordResult(False, provider=self.name)
+
+        self.spike_armed = False
+        if self.first_clap_time is None:
+            self.first_clap_time = now
+            return WakeWordResult(False, provider=self.name)
+
+        gap = now - self.first_clap_time
+        if gap < self.config.clap_min_gap_s:
+            return WakeWordResult(False, provider=self.name)
+        if gap <= self.config.clap_max_gap_s:
+            self.first_clap_time = None
+            self.last_logged_double = now
+            confidence = min(1.0, level / max(threshold, 1e-7))
+            return WakeWordResult(True, phrase="double_clap", confidence=confidence, provider=self.name)
+
+        self.first_clap_time = now
+        return WakeWordResult(False, provider=self.name)
+
+    def health(self) -> GateProviderHealth:
+        return GateProviderHealth(
+            "wake",
+            self.name,
+            configured=True,
+            active=True,
+            available=True,
+            detail=(
+                "Adaptive double-clap wake gate using audio_energy payloads "
+                f"(ratio={self.config.clap_spike_ratio:.1f}, gap={self.config.clap_min_gap_s:.2f}-{self.config.clap_max_gap_s:.2f}s)."
+            ),
+        )
+
+
 class EnergyVADProvider:
     name = "energy_threshold"
 
@@ -214,6 +304,8 @@ def build_wake_provider(config: WakeGateConfig) -> tuple[WakeWordProvider, WakeW
     requested: WakeWordProvider
     if config.wake_word_provider == "openwakeword":
         requested = OpenWakeWordProvider(config.wake_phrases, config.wake_model_path)
+    elif config.wake_word_provider == "double_clap":
+        requested = DoubleClapWakeProvider(config)
     elif config.wake_word_provider == "mock":
         requested = MockWakeWordProvider(config.wake_phrases)
     else:
@@ -292,5 +384,19 @@ def _payload_energy(payload: dict[str, Any]) -> float | None:
         return None
 
 
+def _payload_timestamp(payload: dict[str, Any]) -> float:
+    value = payload.get("timestamp_s", payload.get("timestamp", payload.get("time_s")))
+    if value is not None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            pass
+    return time.monotonic()
+
+
 def _normalize_phrase(phrase: str) -> str:
     return " ".join(phrase.strip().lower().split())
+
+
+def _clamp_float(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))

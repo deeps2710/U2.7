@@ -8,7 +8,9 @@ from typing import Any
 
 from .audit import append_audit_record
 from .brain import TaskPlan, TaskState, TaskStep, UltronBrain, format_memory
+from .internet import WebSearchResponse, search_web
 from .models import ToolCall
+from .neural_router import NeuralRouterPredictor
 
 
 ASSISTANT_TONE = (
@@ -38,6 +40,7 @@ class ConversationTurn:
     task: dict[str, Any] | None = None
     needs_confirmation: bool = False
     memory_events: list[str] = field(default_factory=list)
+    neural_router: dict[str, Any] | None = None
     created_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict[str, Any]:
@@ -74,6 +77,14 @@ class FastIntentRouter:
         chat_response = self._chat_response(lowered)
         if chat_response:
             return RoutedIntent("chat", understood, chat_response)
+
+        web_query = self._web_query(understood)
+        if web_query:
+            return RoutedIntent("web_search", understood, query=web_query)
+
+        fallback_chat = self._fallback_chat_response(understood)
+        if fallback_chat:
+            return RoutedIntent("chat", understood, fallback_chat)
 
         return RoutedIntent("command", understood)
 
@@ -113,16 +124,50 @@ class FastIntentRouter:
 
     def _chat_response(self, lowered: str) -> str:
         normalized = lowered.strip(" .!?")
-        if normalized in {"hi", "hello", "hey", "hello ultron", "hey ultron", "ultron"}:
+        normalized = re.sub(r"^(?:hey|hello|hi)[\s,.:;-]+cortana[\s,.:;-]*", "hello ", normalized).strip()
+        if normalized in {"hi", "hello", "hey", "hello ultron", "hey ultron", "ultron", "hello hello"}:
             return "At your service. Tell me what you need and I will handle the safe steps."
+        if re.search(r"\b(am i audible|can you hear me|do you hear me|are you listening|mic working|microphone working)\b", normalized):
+            return "I can read your messages here. If you are testing voice, use the diagnostics panel to check microphone capture and STT."
         if normalized in {"thanks", "thank you", "thanks ultron", "thank you ultron"}:
             return "Always. I will keep things clear and quick."
         if normalized in {"how are you", "how are you ultron"}:
             return "Online and steady. Ready when you are."
+        if normalized in {"are you there", "you there", "are you online"}:
+            return "Yes. I am online in this local session."
         if normalized in {"who are you", "what are you"}:
             return "I am ULTRON 2.7, your local assistant for chat, planning, voice, and safe laptop tasks."
         if re.search(r"\b(what can you do|help|commands)\b", lowered):
             return "I can chat, create notes, search files, set reminders, open safe apps, search the web, play music, and pause before risky actions."
+        return ""
+
+    def _web_query(self, text: str) -> str:
+        lowered = text.lower().strip()
+        explicit = re.match(
+            r"^(?:search|look up|google|find)\s+(?:the\s+)?(?:web|internet|online|google)?\s*(?:for\s+)?(?P<query>.+)$",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if explicit and re.search(r"\b(web|internet|online|google)\b", lowered):
+            return explicit.group("query").strip()
+
+        if re.search(r"\b(latest|current|today|news|weather|price|score|who won|when is|where is)\b", lowered):
+            return _clean_web_query(text)
+        if re.match(r"^(?:who|what|when|where|why|how)\s+(?:is|are|was|were|do|does|did|can|many|much)\b", lowered):
+            if not re.search(r"\b(you|your|me|my|i|we|this app|ultron)\b", lowered):
+                return _clean_web_query(text)
+        if re.match(r"^(?:tell me about|give me information about|explain)\s+.+", lowered):
+            return _clean_web_query(text)
+        return ""
+
+    def _fallback_chat_response(self, text: str) -> str:
+        lowered = text.lower()
+        if "?" in text:
+            return "I can talk with you. If you want live information, ask me to search the web, for example: search the internet for today's AI news."
+        if re.search(r"\b(impossible|unsafe|dangerous|admin|system|bypass|hack|do something)\b", lowered):
+            return ""
+        if len(text.split()) <= 6 and not re.search(r"\b(open|delete|search|create|set|start|play|copy|read|run|shutdown|restart|do|make|send|move|rename)\b", lowered):
+            return "I am with you. Tell me what you want to do, or ask me a question."
         return ""
 
 
@@ -133,6 +178,8 @@ class ConversationManager:
         self.turns: list[ConversationTurn] = []
         self.memory_enabled = self._load_memory_enabled()
         self._command_counts: dict[str, int] = {}
+        settings = self.brain.assistant.settings
+        self.neural_router = NeuralRouterPredictor(settings.neural_router_model) if settings.neural_router_enabled else None
 
     def handle(self, text: str, *, confirmed: bool = False, mode: str = "do") -> dict[str, Any]:
         if mode == "plan":
@@ -141,6 +188,7 @@ class ConversationManager:
             return self._payload(turn)
 
         routed = self.router.route(text)
+        neural_suggestion = self._neural_suggestion(routed.understood)
         memory_events: list[str] = []
         task: TaskPlan | None = None
         response = routed.response
@@ -171,6 +219,10 @@ class ConversationManager:
                 response = "Remembered." if stored else "I did not store that because it looked sensitive or incomplete."
                 memory_events.append(f"remembered:{routed.key}" if stored else "memory_rejected")
             task = self._assistant_reply_task(routed.understood, response)
+        elif routed.kind == "web_search":
+            web = search_web(routed.query)
+            response = web.answer
+            task = self._assistant_reply_task(routed.understood, response, web=web)
         elif routed.kind == "empty":
             task = self._assistant_reply_task(routed.understood or "empty input", response)
         else:
@@ -186,6 +238,7 @@ class ConversationManager:
             task=task_dict,
             needs_confirmation=needs_confirmation,
             memory_events=memory_events,
+            neural_router=neural_suggestion,
         )
         self._audit_turn(turn)
         return self._payload(turn)
@@ -202,7 +255,7 @@ class ConversationManager:
         removed = self.brain.memory.forget(query)
         return {"enabled": self.memory_enabled, "removed": removed, "items": self.brain.memory.list()}
 
-    def _assistant_reply_task(self, utterance: str, message: str) -> TaskPlan:
+    def _assistant_reply_task(self, utterance: str, message: str, *, web: WebSearchResponse | None = None) -> TaskPlan:
         payload = self.brain.assistant.handle_tool_call(
             utterance,
             ToolCall("assistant_reply", {"message": message}),
@@ -217,6 +270,8 @@ class ConversationManager:
             policy=payload["policy"],
             result=payload["result"],
         )
+        if web is not None and step.result is not None:
+            step.result.setdefault("data", {})["web"] = web.to_dict()
         task = TaskPlan(
             task_id=str(uuid.uuid4()),
             original_goal=utterance,
@@ -266,6 +321,7 @@ class ConversationManager:
         task: dict[str, Any] | None = None,
         needs_confirmation: bool = False,
         memory_events: list[str] | None = None,
+        neural_router: dict[str, Any] | None = None,
     ) -> ConversationTurn:
         turn = ConversationTurn(
             turn_id=str(uuid.uuid4()),
@@ -276,6 +332,7 @@ class ConversationManager:
             task=task,
             needs_confirmation=needs_confirmation,
             memory_events=memory_events or [],
+            neural_router=neural_router,
         )
         self.turns.append(turn)
         self.turns = self.turns[-30:]
@@ -293,6 +350,7 @@ class ConversationManager:
             "conversation": turn.to_dict(),
             "conversation_history": [item.to_dict() for item in self.turns[-10:]],
             "memory_enabled": self.memory_enabled,
+            "neural_router": turn.neural_router,
         }
 
     def _audit_turn(self, turn: ConversationTurn) -> None:
@@ -301,11 +359,30 @@ class ConversationManager:
             return
         append_audit_record({"record_type": "conversation_turn", "turn": turn.to_dict()}, settings.audit_log)
 
+    def _neural_suggestion(self, understood: str) -> dict[str, Any] | None:
+        if self.neural_router is None:
+            return None
+        prediction = self.neural_router.predict(understood)
+        if prediction is None:
+            return self.neural_router.status()
+        return prediction.to_dict()
+
 
 def cleanup_user_text(text: str) -> str:
     value = " ".join(str(text or "").strip().split())
     value = re.sub(r"^(?:hey\s+)?ultron[\s,.:;-]+", "", value, flags=re.IGNORECASE)
     return value.strip()
+
+
+def _clean_web_query(text: str) -> str:
+    query = text.strip(" ?")
+    patterns = [
+        r"^(?:who|what)\s+(?:is|are|was|were)\s+",
+        r"^(?:tell me about|give me information about|explain)\s+",
+    ]
+    for pattern in patterns:
+        query = re.sub(pattern, "", query, flags=re.IGNORECASE).strip()
+    return query or text.strip(" ?")
 
 
 def clean_memory_value(value: str) -> str:

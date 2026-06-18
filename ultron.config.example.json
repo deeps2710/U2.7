@@ -28,6 +28,8 @@
   "llm_model": "qwen2.5:7b-instruct",
   "llm_endpoint": "http://localhost:11434",
   "llm_timeout_seconds": 8,
+  "neural_router_enabled": false,
+  "neural_router_model": ".ultron/models/neural_router.pt",
   "voice_stt_provider": "browser",
   "voice_capture_provider": "browser",
   "voice_microphone_device": null,
@@ -50,5 +52,13 @@
   ],
   "wake_model_path": null,
   "vad_provider": "energy",
-  "vad_energy_threshold": 0.015
+  "vad_energy_threshold": 0.015,
+  "clap_spike_ratio": 7.0,
+  "clap_min_rms": 0.012,
+  "clap_min_gap_s": 0.05,
+  "clap_max_gap_s": 0.35,
+  "clap_cooldown_s": 0.45,
+  "clap_retrigger_ratio": 0.55,
+  "clap_noise_floor_alpha": 0.992,
+  "clap_quiet_gate_mult": 2.2
 }

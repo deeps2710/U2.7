@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import shutil
 import subprocess
 import tempfile
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import wave
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -25,6 +29,7 @@ from .wake import (
     gate_providers_status,
     strip_wake_phrase,
 )
+from .secrets import get_secret
 
 
 CONFIRMATION_PHRASES = {"yes confirm", "confirm", "confirmed", "yes proceed", "proceed"}
@@ -220,6 +225,8 @@ class FasterWhisperSTT(TextPayloadSTT):
         self.model_path = model_path
         self.model_name = model_name
         self.device = device
+        self._model: Any | None = None
+        self._model_error: str | None = None
 
     def transcribe(self, payload: dict[str, Any]) -> STTResult:
         if payload.get("transcript") or payload.get("text"):
@@ -231,20 +238,23 @@ class FasterWhisperSTT(TextPayloadSTT):
         if not audio_path or not health.available:
             return STTResult(text="", confidence=0.0, provider=self.name, empty=True)
         try:
-            from faster_whisper import WhisperModel  # type: ignore[import-not-found]
-
-            model = WhisperModel(self._model_reference(), device=self.device)
-            segments, info = model.transcribe(str(audio_path))
+            model = self._load_model()
+            segments, info = model.transcribe(str(audio_path), vad_filter=True, beam_size=5)
             text = " ".join(segment.text.strip() for segment in segments).strip()
             confidence = float(getattr(info, "language_probability", 1.0))
             normalized = clean_transcript(text)
             return STTResult(text=normalized, confidence=confidence, provider=self.name, empty=not bool(normalized))
-        except Exception:
+        except Exception as exc:
+            self._model_error = str(exc)
             return STTResult(text="", confidence=0.0, provider=self.name, empty=True)
 
     def health(self) -> ProviderHealth:
         if importlib.util.find_spec("faster_whisper") is None:
             return ProviderHealth("stt", self.name, configured=True, active=False, available=False, detail="Python package faster-whisper is not installed.", fallback_to="browser")
+        if self._model_error:
+            return ProviderHealth("stt", self.name, configured=True, active=True, available=True, detail=f"Installed; last model load/transcribe warning: {self._model_error}")
+        if self._model is not None:
+            return ProviderHealth("stt", self.name, configured=True, active=True, available=True, detail=f"Model loaded and warm: {self._model_reference()}.")
         if self.model_name:
             return ProviderHealth("stt", self.name, configured=True, active=True, available=True, detail=f"Ready to use faster-whisper model name: {self.model_name}.")
         if self.model_path is None:
@@ -253,12 +263,34 @@ class FasterWhisperSTT(TextPayloadSTT):
             return ProviderHealth("stt", self.name, configured=True, active=False, available=False, detail=f"Model path not found: {self.model_path}", fallback_to="browser")
         return ProviderHealth("stt", self.name, configured=True, active=True, available=True, detail=f"Ready on {self.device}.")
 
+    def warm_up(self) -> ProviderHealth:
+        health = self.health()
+        if not health.available:
+            return health
+        try:
+            self._load_model()
+        except Exception as exc:
+            self._model_error = str(exc)
+            return ProviderHealth("stt", self.name, configured=True, active=True, available=True, detail=f"Installed, but model warm-up failed: {exc}")
+        return self.health()
+
     def _model_reference(self) -> str:
         if self.model_name:
             return self.model_name
         if self.model_path is not None:
             return str(self.model_path)
         return "base.en"
+
+    def _load_model(self) -> Any:
+        if self._model is not None:
+            return self._model
+        from faster_whisper import WhisperModel  # type: ignore[import-not-found]
+
+        device = "auto" if self.device == "auto" else self.device
+        compute_type = "int8" if device in {"cpu", "auto"} else "float16"
+        self._model = WhisperModel(self._model_reference(), device=device, compute_type=compute_type)
+        self._model_error = None
+        return self._model
 
 
 class WhisperCppSTT(TextPayloadSTT):
@@ -300,6 +332,62 @@ class WhisperCppSTT(TextPayloadSTT):
         if not self.model_path.exists():
             return ProviderHealth("stt", self.name, configured=True, active=False, available=False, detail=f"Model path not found: {self.model_path}", fallback_to="browser")
         return ProviderHealth("stt", self.name, configured=True, active=True, available=True, detail=f"Ready on {self.device}.")
+
+
+class DeepgramSTT(TextPayloadSTT):
+    name = "deepgram"
+
+    def __init__(
+        self,
+        *,
+        model_name: str | None = None,
+        api_key: str | None = None,
+        endpoint: str = "https://api.deepgram.com/v1/listen",
+    ) -> None:
+        self.model_name = model_name or "nova-3"
+        self.api_key = api_key
+        self.endpoint = endpoint
+        self._last_error: str | None = None
+
+    def transcribe(self, payload: dict[str, Any]) -> STTResult:
+        if payload.get("transcript") or payload.get("text"):
+            result = super().transcribe(payload)
+            result.provider = self.name
+            return result
+        audio_path = _payload_audio_path(payload)
+        health = self.health()
+        if not audio_path or not health.available:
+            return STTResult(text="", confidence=0.0, provider=self.name, empty=True)
+        query = urllib.parse.urlencode({"model": self.model_name, "smart_format": "true"})
+        request = urllib.request.Request(
+            f"{self.endpoint}?{query}",
+            data=audio_path.read_bytes(),
+            headers={
+                "Authorization": f"Token {self._api_key()}",
+                "Content-Type": _audio_content_type(audio_path),
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=float(payload.get("timeout", 30) or 30)) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            self._last_error = str(exc)
+            return STTResult(text="", confidence=0.0, provider=self.name, empty=True)
+        transcript, confidence = _deepgram_transcript(data)
+        normalized = clean_transcript(transcript)
+        self._last_error = None
+        return STTResult(text=normalized, confidence=confidence, provider=self.name, empty=not bool(normalized))
+
+    def health(self) -> ProviderHealth:
+        if not self._api_key():
+            return ProviderHealth("stt", self.name, configured=True, active=False, available=False, detail="Deepgram API key is missing. Set DEEPGRAM_API_KEY.", fallback_to="browser")
+        if self._last_error:
+            return ProviderHealth("stt", self.name, configured=True, active=True, available=True, detail=f"Ready with model {self.model_name}; last transcription warning: {self._last_error}")
+        return ProviderHealth("stt", self.name, configured=True, active=True, available=True, detail=f"Ready with model {self.model_name}.")
+
+    def _api_key(self) -> str:
+        return self.api_key or get_secret("DEEPGRAM_API_KEY")
 
 
 class BrowserSpeechTTS:
@@ -691,7 +779,43 @@ class VoiceSession:
             self._update_diagnostics(capture_payload, None, status=str(capture_payload.get("status", "unavailable")), detail=self.status.last_error)
             return self.snapshot({"status": "capture_unavailable", "capture": capture_payload, "message": self.status.last_error, "voice_diagnostics": self.diagnostics.to_dict()})
         merged = {**payload, **capture_payload}
-        return self.transcribe_and_run(merged, command_runner)
+        result = self.transcribe_and_run(merged, command_runner)
+        if not self.wake_status.always_listening:
+            self.status.microphone_enabled = False
+            self.status.listening = False
+            result["voice"] = self.status.to_dict()
+        return result
+
+    def calibrate_microphone(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = payload or {}
+        seconds = max(1.0, min(6.0, float(payload.get("seconds", 2.5))))
+        capture_payload = self.capture.capture({**payload, "seconds": seconds})
+        if capture_payload.get("status") not in {"ok", "delegated"}:
+            detail = str(capture_payload.get("message", "Microphone capture is unavailable."))
+            self._update_diagnostics(capture_payload, None, status=str(capture_payload.get("status", "unavailable")), detail=detail)
+            return self.snapshot({"status": "capture_unavailable", "capture": capture_payload, "message": detail, "voice_diagnostics": self.diagnostics.to_dict()})
+
+        audio = analyze_audio_payload(capture_payload)
+        energy = float(audio.get("audio_energy", 0.0))
+        suggested_threshold = max(0.006, min(0.045, energy * 0.45 if energy else self.wake_config.vad_energy_threshold))
+        if isinstance(self.vad, EnergyVADProvider):
+            self.vad.threshold = suggested_threshold
+        detail = (
+            f"Calibration captured {audio.get('audio_duration_ms', 0)} ms. "
+            f"Energy {energy:.3f}; VAD threshold now {suggested_threshold:.3f}."
+        )
+        self._update_diagnostics(capture_payload, None, status="calibrated", detail=detail, audio=audio)
+        return self.snapshot(
+            {
+                "status": "ok",
+                "capture": capture_payload,
+                "audio": audio,
+                "suggested_vad_energy_threshold": round(suggested_threshold, 6),
+                "message": detail,
+                "voice_diagnostics": self.diagnostics.to_dict(),
+                **self.gate_status(),
+            }
+        )
 
     def speak(self, text: str) -> dict[str, Any]:
         if self.status.muted:
@@ -742,10 +866,28 @@ class VoiceSession:
             self.wake_status.last_event = "Always-listening mode is off."
             return self.snapshot({"status": "inactive", "message": self.wake_status.last_event, **self.gate_status()})
 
+        early_wake_result = self.wake.detect(payload) if self.wake.name == "double_clap" else None
         vad_result = self.vad.detect(payload)
         self.wake_status.voice_detected = bool(vad_result.speech)
         self.wake_status.noisy_ignored = bool(vad_result.noisy or not vad_result.speech)
         if not vad_result.speech:
+            if early_wake_result is not None and early_wake_result.detected:
+                self.wake_status.mode = "listening"
+                self.wake_status.wake_word_detected = True
+                self.wake_status.noisy_ignored = False
+                self.wake_status.last_wake_phrase = early_wake_result.phrase
+                self.wake_status.last_event = "Double clap detected. Listening for a command."
+                self.status.listening = True
+                return self.snapshot(
+                    {
+                        "status": "wake_detected",
+                        "message": self.wake_status.last_event,
+                        "wake_detection": early_wake_result.to_dict(),
+                        "vad": vad_result.to_dict(),
+                        "command_executed": False,
+                        **self.gate_status(),
+                    }
+                )
             self.wake_status.mode = "waiting_for_wake_word"
             self.wake_status.wake_word_detected = False
             self.wake_status.last_wake_phrase = None
@@ -760,7 +902,7 @@ class VoiceSession:
                 }
             )
 
-        wake_result = self.wake.detect(payload)
+        wake_result = early_wake_result or self.wake.detect(payload)
         raw_text = str(payload.get("transcript") or payload.get("text") or "").strip()
         if self.wake_status.mode != "listening" and not wake_result.detected:
             self.wake_status.wake_word_detected = False
@@ -1094,6 +1236,8 @@ def _create_stt_provider(config: VoiceProviderConfig) -> STTProvider:
         return FasterWhisperSTT(config.stt_model_path, model_name=config.stt_model, device=config.device)
     if provider == "whisper_cpp":
         return WhisperCppSTT(config.stt_model_path, device=config.device)
+    if provider == "deepgram":
+        return DeepgramSTT(model_name=config.stt_model)
     if provider == "browser":
         return BrowserTranscriptSTT()
     if provider == "mock":
@@ -1146,6 +1290,37 @@ def _payload_audio_path(payload: dict[str, Any]) -> Path | None:
         return None
     path = Path(str(raw)).expanduser()
     return path if path.exists() and path.is_file() else None
+
+
+def _audio_content_type(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".wav":
+        return "audio/wav"
+    if suffix == ".mp3":
+        return "audio/mpeg"
+    if suffix == ".m4a":
+        return "audio/mp4"
+    if suffix == ".ogg":
+        return "audio/ogg"
+    if suffix == ".webm":
+        return "audio/webm"
+    return "application/octet-stream"
+
+
+def _deepgram_transcript(payload: dict[str, Any]) -> tuple[str, float]:
+    channels = (((payload.get("results") or {}).get("channels")) if isinstance(payload.get("results"), dict) else None)
+    if not isinstance(channels, list) or not channels:
+        return "", 0.0
+    alternatives = channels[0].get("alternatives") if isinstance(channels[0], dict) else None
+    if not isinstance(alternatives, list) or not alternatives:
+        return "", 0.0
+    transcript = alternatives[0].get("transcript") if isinstance(alternatives[0], dict) else ""
+    confidence = alternatives[0].get("confidence", 1.0) if isinstance(alternatives[0], dict) else 0.0
+    if not isinstance(transcript, str):
+        transcript = ""
+    if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
+        confidence = 1.0 if transcript else 0.0
+    return transcript, max(0.0, min(1.0, float(confidence)))
 
 
 def _duration_from_seconds(payload: dict[str, Any]) -> int:

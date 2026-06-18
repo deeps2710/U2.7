@@ -106,6 +106,7 @@ export function createArmillaryCore({ scene, camera, renderer }) {
   let speechText = "";
   let textEmphasis = 0.35;
   let voiceProfile = { pitch: 0.72, rate: 0.92, volume: 0.95 };
+  let targetRootY = 4.15;
 
   return {
     setState(state) {
@@ -127,6 +128,9 @@ export function createArmillaryCore({ scene, camera, renderer }) {
         volume: Number(profile.volume ?? voiceProfile.volume),
       };
     },
+    setLayoutMode(mode) {
+      targetRootY = mode === "compact" ? 0.55 : 4.15;
+    },
     update(time, state = visualState) {
       if (STATE_PROFILES[state] && state !== visualState) {
         visualState = state;
@@ -139,6 +143,7 @@ export function createArmillaryCore({ scene, camera, renderer }) {
       const scale = current.scale * flicker;
       const shaderTime = time * current.shaderTime;
 
+      root.position.y = THREE.MathUtils.lerp(root.position.y, targetRootY, 0.08);
       shared.coreTime.value = shaderTime;
       shared.energy.value = current.energy;
       shared.opacity.value = current.opacity;

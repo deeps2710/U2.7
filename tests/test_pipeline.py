@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import socket
 import threading
 import tempfile
@@ -21,8 +22,9 @@ from ultron27.conversation import ConversationManager
 from ultron27.diagnostics import build_diagnostics
 from ultron27.dataset_quality import DatasetRow, analyze_dataset, build_safety_cases, is_underspecified
 from ultron27.executor import Executor
+from ultron27.internet import WebSearchResponse, WebSearchResult
 from ultron27.knowledge import KnowledgeBase
-from ultron27.llm import LLMPlanner, LLMPlannerError, parse_llm_tool_call
+from ultron27.llm import GroqProvider, LLMPlanner, LLMPlannerError, parse_llm_tool_call
 from ultron27.models import RiskLevel, ToolCall
 from ultron27.planner import DatasetPlanner, regex_plan
 from ultron27.policy import decide
@@ -30,6 +32,7 @@ from ultron27.runtime import RuntimeSettings, UltronAssistant
 from ultron27.skills import SkillRegistry, SkillSpec, validate_skill_input
 from ultron27.tools import validate_tool_call
 from ultron27.voice import (
+    DeepgramSTT,
     MockMicrophoneCapture,
     MockSTT,
     MockTTS,
@@ -41,7 +44,7 @@ from ultron27.voice import (
     clean_transcript,
     strip_wake_word,
 )
-from ultron27.wake import MockVADProvider, MockWakeWordProvider, WakeGateConfig
+from ultron27.wake import DoubleClapWakeProvider, EnergyVADProvider, MockVADProvider, MockWakeWordProvider, WakeGateConfig
 from ultron27.web_server import WebState, make_handler
 from ultron27.windows_executor import merge_windows_app_aliases, resolve_app_alias
 from scripts.config_wizard import generate_config
@@ -92,6 +95,41 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(payload["task"]["status"], "completed")
         self.assertEqual(payload["task"]["steps"][0]["tool_call"]["name"], "assistant_reply")
         self.assertIn("At your service", payload["subtitle"])
+
+    def test_audibility_check_is_chat_not_unsupported_command(self) -> None:
+        state = WebState(UltronBrain(UltronAssistant(_test_settings())))
+
+        payload = state.command("Am I audible or wrong?")
+
+        self.assertEqual(payload["route"], "chat")
+        self.assertEqual(payload["task"]["steps"][0]["tool_call"]["name"], "assistant_reply")
+        self.assertIn("read your messages", payload["response"])
+
+    def test_cortana_greeting_is_chat_not_unsupported_command(self) -> None:
+        state = WebState(UltronBrain(UltronAssistant(_test_settings())))
+
+        payload = state.command("Hey, Cortana. Hello.")
+
+        self.assertEqual(payload["route"], "chat")
+        self.assertNotIn("No safe supported tool", payload["response"])
+
+    def test_factual_question_uses_web_search_response(self) -> None:
+        state = WebState(UltronBrain(UltronAssistant(_test_settings())))
+        web = WebSearchResponse(
+            "success",
+            "who is ada lovelace",
+            "I found this on the web for who is ada lovelace:\n1. Ada Lovelace - Mathematician",
+            (WebSearchResult("Ada Lovelace", "https://example.test/ada", "Mathematician and early programmer."),),
+        )
+
+        with patch("ultron27.conversation.search_web", return_value=web) as search_mock:
+            payload = state.command("Who is Ada Lovelace?")
+
+        self.assertEqual(payload["route"], "web_search")
+        self.assertIn("Ada Lovelace", payload["response"])
+        self.assertEqual(payload["task"]["steps"][0]["tool_call"]["name"], "assistant_reply")
+        self.assertEqual(payload["task"]["steps"][0]["result"]["data"]["web"]["results"][0]["url"], "https://example.test/ada")
+        search_mock.assert_called_once_with("Ada Lovelace")
 
     def test_conversation_manager_learns_and_forgets_safe_memory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -378,7 +416,7 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(plan.risk_level.value, "low")
 
     def test_phase15_regex_handles_flexible_open_app_phrasing(self) -> None:
-        phrases = ["launch notepad", "bring up notepad", "start the notes app"]
+        phrases = ["launch notepad", "bring up notepad", "start the notes app", "launch the basic text editor"]
 
         plans = [regex_plan(phrase) for phrase in phrases]
 
@@ -451,6 +489,37 @@ class PipelineTest(unittest.TestCase):
         self.assertTrue(payload["runtime"]["llm"]["attempted"])
         self.assertIn("Ollama unavailable", payload["runtime"]["llm"]["error"])
 
+    def test_hybrid_groq_retries_unknown_open_app_alias(self) -> None:
+        class FakeRouter:
+            def route(self, utterance: str):
+                self.utterance = utterance
+                return regex_plan("open notepad")
+
+        settings = RuntimeSettings(
+            dataset_path=Path("data/jarvis_dataset_v2/jarvis_laptop_commands_synthetic_v2.jsonl"),
+            audit_log=Path(".ultron/test-audit.jsonl"),
+            workspace=Path("."),
+            dry_run=True,
+            safe_roots=(Path("."),),
+            app_aliases=None,
+            screenshot_dir=Path(".ultron/screenshots"),
+            planner_mode="hybrid",
+            llm_model="unused",
+            llm_endpoint="https://api.groq.com/openai/v1",
+            llm_timeout_seconds=1.0,
+            llm_provider="groq",
+            write_audit=False,
+        )
+        router = FakeRouter()
+
+        with patch("ultron27.runtime.make_groq_router", return_value=router) as mocked:
+            payload = UltronAssistant(settings).handle("launch the simple writing program")
+
+        self.assertTrue(mocked.called)
+        self.assertEqual(router.utterance, "launch the simple writing program")
+        self.assertEqual(payload["tool_call"], {"name": "open_application", "arguments": {"app": "notepad"}})
+        self.assertTrue(payload["runtime"]["llm"]["attempted"])
+
     def test_phase4_config_accepts_llm_settings(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -474,6 +543,60 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(config.llm_model, "qwen-test")
             self.assertEqual(config.llm_endpoint, "http://localhost:11434")
             self.assertEqual(config.llm_timeout_seconds, 3.0)
+
+    def test_groq_provider_parses_openai_compatible_response(self) -> None:
+        class FakeResponse:
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": '{"intent":"open_app","tool_name":"open_application","tool_arguments":{"app":"notepad"},"confidence":0.92}'
+                                }
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+        with patch.dict(os.environ, {"GROQ_API_KEY": "test-key"}), patch("urllib.request.urlopen", return_value=FakeResponse()) as mocked:
+            content = GroqProvider(endpoint="https://api.groq.com/openai/v1", model="test-model").complete("open notepad", 2)
+
+        self.assertIn('"tool_name":"open_application"', content)
+        request = mocked.call_args.args[0]
+        self.assertEqual(request.full_url, "https://api.groq.com/openai/v1/chat/completions")
+        self.assertEqual(request.get_header("Authorization"), "Bearer test-key")
+
+    def test_config_accepts_groq_and_deepgram_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "ultron.config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "planner_mode": "hybrid",
+                        "llm_provider": "groq",
+                        "llm_model": "openai/gpt-oss-20b",
+                        "llm_endpoint": "https://api.groq.com/openai/v1",
+                        "voice_stt_provider": "deepgram",
+                        "voice_stt_model": "nova-3",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path, environ={}, base_dir=root)
+
+            self.assertEqual(config.llm_provider, "groq")
+            self.assertEqual(config.llm_endpoint, "https://api.groq.com/openai/v1")
+            self.assertEqual(config.voice_stt_provider, "deepgram")
+            self.assertEqual(config.voice_stt_model, "nova-3")
 
     def test_phase5_runtime_reuses_pipeline(self) -> None:
         settings = RuntimeSettings(
@@ -947,6 +1070,50 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(config.voice_identity, "ULTRON-local")
             self.assertEqual(config.voice_rate, 1.05)
 
+    def test_deepgram_stt_parses_prerecorded_audio_response(self) -> None:
+        class FakeResponse:
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "results": {
+                            "channels": [
+                                {
+                                    "alternatives": [
+                                        {"transcript": "open notepad", "confidence": 0.91}
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                ).encode("utf-8")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            audio_path = Path(tmp) / "sample.wav"
+            audio_path.write_bytes(b"RIFF....WAVEfmt ")
+
+            with patch.dict(os.environ, {"DEEPGRAM_API_KEY": "test-key"}), patch("urllib.request.urlopen", return_value=FakeResponse()) as mocked:
+                result = DeepgramSTT(model_name="nova-3").transcribe({"audio_path": str(audio_path)})
+
+        self.assertEqual(result.text, "open notepad")
+        self.assertEqual(result.provider, "deepgram")
+        self.assertAlmostEqual(result.confidence, 0.91)
+        request = mocked.call_args.args[0]
+        self.assertIn("https://api.deepgram.com/v1/listen?model=nova-3", request.full_url)
+        self.assertEqual(request.get_header("Authorization"), "Token test-key")
+
+    def test_deepgram_stt_reports_missing_key_as_unavailable(self) -> None:
+        with patch("ultron27.voice.get_secret", return_value=""):
+            health = DeepgramSTT(model_name="nova-3").health()
+
+        self.assertFalse(health.available)
+        self.assertEqual(health.fallback_to, "browser")
+
     def test_phase9_missing_local_voice_models_fall_back_gracefully(self) -> None:
         class Config:
             voice_stt_provider = "faster_whisper"
@@ -988,6 +1155,37 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(tts_payload["speech"]["provider"], "mock_tts")
         self.assertEqual(tts.spoken, ["Done."])
         self.assertEqual(tts_payload["speech"]["voice"], "ULTRON-test")
+
+    def test_backend_capture_is_one_shot_and_turns_microphone_off(self) -> None:
+        session = VoiceSession(
+            stt=MockSTT("ULTRON, create note backend once"),
+            tts=MockTTS(),
+            capture=MockMicrophoneCapture("ULTRON, create note backend once"),
+            configured_capture=MockMicrophoneCapture(),
+        )
+        state = WebState(UltronBrain(UltronAssistant(_test_settings())), voice=session)
+
+        payload = state.voice_capture({})
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertFalse(payload["voice"]["microphone_enabled"])
+        self.assertEqual(payload["voice_diagnostics"]["capture_provider"], "mock_capture")
+
+    def test_voice_calibration_updates_energy_vad_threshold(self) -> None:
+        vad = EnergyVADProvider(0.015)
+        session = VoiceSession(
+            capture=MockMicrophoneCapture(),
+            configured_capture=MockMicrophoneCapture(),
+            vad=vad,
+            configured_vad=vad,
+        )
+        state = WebState(UltronBrain(UltronAssistant(_test_settings())), voice=session)
+
+        payload = state.voice_calibrate({"audio_energy": 0.04, "seconds": 1})
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertAlmostEqual(vad.threshold, 0.018, places=3)
+        self.assertEqual(payload["voice_diagnostics"]["status"], "calibrated")
 
     def test_phase9_voice_provider_api_endpoints(self) -> None:
         tts = MockTTS()
@@ -1081,6 +1279,70 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(config.wake_model_path, root / "models" / "wake.onnx")
             self.assertEqual(config.vad_provider, "energy")
             self.assertEqual(config.vad_energy_threshold, 0.025)
+
+    def test_phase10_config_accepts_double_clap_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "ultron.config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "wake_word_provider": "double_clap",
+                        "clap_spike_ratio": 5.5,
+                        "clap_min_gap_s": 0.08,
+                        "clap_max_gap_s": 0.42,
+                        "clap_cooldown_s": 0.6,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path, environ={}, base_dir=root)
+
+            self.assertEqual(config.wake_word_provider, "double_clap")
+            self.assertEqual(config.clap_spike_ratio, 5.5)
+            self.assertEqual(config.clap_min_gap_s, 0.08)
+            self.assertEqual(config.clap_max_gap_s, 0.42)
+            self.assertEqual(config.clap_cooldown_s, 0.6)
+
+    def test_phase10_double_clap_provider_detects_second_spike(self) -> None:
+        config = WakeGateConfig(wake_word_provider="double_clap")
+        provider = DoubleClapWakeProvider(config)
+
+        first = provider.detect({"audio_energy": 0.05, "timestamp_s": 1.0})
+        provider.detect({"audio_energy": 0.001, "timestamp_s": 1.10})
+        second = provider.detect({"audio_energy": 0.05, "timestamp_s": 1.20})
+
+        self.assertFalse(first.detected)
+        self.assertTrue(second.detected)
+        self.assertEqual(second.phrase, "double_clap")
+        self.assertEqual(second.provider, "double_clap")
+
+    def test_phase10_double_clap_wake_gate_enters_listening_without_command(self) -> None:
+        config = WakeGateConfig(wake_word_provider="double_clap")
+        wake = DoubleClapWakeProvider(config)
+        vad = EnergyVADProvider(0.015)
+        state = WebState(
+            UltronBrain(UltronAssistant(_test_settings())),
+            voice=VoiceSession(
+                wake=wake,
+                vad=vad,
+                configured_wake=wake,
+                configured_vad=vad,
+                wake_config=config,
+            ),
+        )
+
+        state.wake_start()
+        first = state.wake_process({"audio_energy": 0.05, "timestamp_s": 1.0})
+        quiet = state.wake_process({"audio_energy": 0.001, "timestamp_s": 1.10})
+        second = state.wake_process({"audio_energy": 0.05, "timestamp_s": 1.20})
+
+        self.assertEqual(first["status"], "ignored")
+        self.assertEqual(quiet["status"], "ignored")
+        self.assertEqual(second["status"], "wake_detected")
+        self.assertEqual(second["wake"]["mode"], "listening")
+        self.assertFalse(second["command_executed"])
 
     def test_phase10_no_wake_word_does_not_execute(self) -> None:
         state = WebState(UltronBrain(UltronAssistant(_test_settings())))
@@ -1225,6 +1487,15 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(resolve_app_alias("editor", aliases), "notepad.exe")
         self.assertIsNone(resolve_app_alias("bad", aliases))
         self.assertIsNone(resolve_app_alias("unknown app", aliases))
+
+    def test_phase11_cursor_alias_is_available_without_raw_shell(self) -> None:
+        aliases = merge_windows_app_aliases()
+
+        target = resolve_app_alias("cursor", aliases)
+
+        self.assertIsNotNone(target)
+        self.assertNotIn("&&", target or "")
+        self.assertNotIn("|", target or "")
 
     def test_phase11_medium_risk_terminal_requires_confirmation(self) -> None:
         plan = regex_plan("open terminal")
