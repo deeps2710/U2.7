@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -13,8 +14,9 @@ import urllib.request
 import wave
 import uuid
 from dataclasses import asdict, dataclass, field
+from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Iterable, Protocol
 
 from .wake import (
     DEFAULT_WAKE_PHRASES,
@@ -24,6 +26,7 @@ from .wake import (
     WakeGateConfig,
     WakeStatus,
     WakeWordProvider,
+    WakeWordResult,
     build_vad_provider,
     build_wake_provider,
     gate_providers_status,
@@ -35,6 +38,7 @@ from .secrets import get_secret
 CONFIRMATION_PHRASES = {"yes confirm", "confirm", "confirmed", "yes proceed", "proceed"}
 LOW_CONFIDENCE_THRESHOLD = 0.45
 MIN_SPEECH_MS = 180
+WAKE_GREETING = "At your service, sir."
 
 
 class STTProvider(Protocol):
@@ -69,15 +73,19 @@ class VoiceProviderConfig:
     sample_rate: int = 16000
     capture_seconds: float = 4.0
     tts_provider: str = "browser_speech_synthesis"
+    tts_model: str | None = "aura-2-orion-en"
     stt_model_path: Path | None = None
     tts_model_path: Path | None = None
     tts_voice_path: Path | None = None
     device: str = "cpu"
     voice_identity: str = "ULTRON"
-    rate: float = 0.94
-    pitch: float = 0.86
-    volume: float = 0.95
+    voice_preference: str = "Microsoft George"
+    rate: float = 1.03
+    pitch: float = 1.0
+    volume: float = 1.0
     stt_model: str | None = None
+    stt_language: str = "multi"
+    stt_keyterms: tuple[str, ...] = ("ULTRON", "WhatsApp", "Spotify")
 
     @classmethod
     def from_config(cls, config: Any) -> "VoiceProviderConfig":
@@ -88,16 +96,45 @@ class VoiceProviderConfig:
             sample_rate=int(getattr(config, "voice_sample_rate", cls.sample_rate)),
             capture_seconds=float(getattr(config, "voice_capture_seconds", cls.capture_seconds)),
             tts_provider=str(getattr(config, "voice_tts_provider", cls.tts_provider)).lower(),
+            tts_model=getattr(config, "voice_tts_model", cls.tts_model),
             stt_model=getattr(config, "voice_stt_model", None),
+            stt_language=str(getattr(config, "voice_stt_language", cls.stt_language)).strip() or "multi",
+            stt_keyterms=_voice_keyterms(config),
             stt_model_path=getattr(config, "voice_stt_model_path", None),
             tts_model_path=getattr(config, "voice_tts_model_path", None),
             tts_voice_path=getattr(config, "voice_tts_voice_path", None),
             device=str(getattr(config, "voice_device", cls.device)).lower(),
             voice_identity=str(getattr(config, "voice_identity", cls.voice_identity)),
+            voice_preference=str(getattr(config, "voice_preference", cls.voice_preference)),
             rate=float(getattr(config, "voice_rate", cls.rate)),
             pitch=float(getattr(config, "voice_pitch", cls.pitch)),
             volume=float(getattr(config, "voice_volume", cls.volume)),
         )
+
+
+def _voice_keyterms(config: Any) -> tuple[str, ...]:
+    configured = getattr(config, "voice_stt_keyterms", ()) or ()
+    if isinstance(configured, str):
+        configured = tuple(item.strip() for item in configured.split(";") if item.strip())
+    contacts = getattr(config, "whatsapp_contacts", None) or {}
+    contact_names = contacts.keys() if isinstance(contacts, dict) else ()
+    builtins = ("ULTRON", "WhatsApp", "Spotify", "Groq", "Deepgram", "Notepad")
+    return _dedupe_keyterms((*builtins, *configured, *contact_names))
+
+
+def _dedupe_keyterms(values: Iterable[str]) -> tuple[str, ...]:
+    terms: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        term = " ".join(str(value).strip().split())
+        key = term.casefold()
+        if not term or len(term) > 80 or key in seen or any(ord(char) < 32 for char in term):
+            continue
+        seen.add(key)
+        terms.append(term)
+        if len(terms) >= 100:
+            break
+    return tuple(terms)
 
 
 @dataclass
@@ -157,9 +194,10 @@ class VoiceStatus:
     configured_stt_provider: str = "text_payload"
     configured_tts_provider: str = "browser_speech_synthesis"
     voice_identity: str = "ULTRON"
-    voice_rate: float = 0.94
-    voice_pitch: float = 0.86
-    voice_volume: float = 0.95
+    voice_preference: str = "Microsoft George"
+    voice_rate: float = 1.03
+    voice_pitch: float = 1.0
+    voice_volume: float = 1.0
     pending_confirmation_goal: str | None = None
     last_error: str | None = None
 
@@ -341,24 +379,36 @@ class DeepgramSTT(TextPayloadSTT):
         self,
         *,
         model_name: str | None = None,
+        language: str = "multi",
+        keyterms: Iterable[str] = (),
         api_key: str | None = None,
         endpoint: str = "https://api.deepgram.com/v1/listen",
     ) -> None:
         self.model_name = model_name or "nova-3"
+        self.language = language.strip() or "multi"
+        self.keyterms = _dedupe_keyterms(keyterms)
         self.api_key = api_key
         self.endpoint = endpoint
         self._last_error: str | None = None
 
     def transcribe(self, payload: dict[str, Any]) -> STTResult:
         if payload.get("transcript") or payload.get("text"):
-            result = super().transcribe(payload)
-            result.provider = self.name
-            return result
+            text = str(payload.get("transcript") or payload.get("text") or "").strip()
+            normalized = clean_transcript(text, keyterms=self.keyterms)
+            confidence = _payload_confidence(payload, default=1.0 if normalized else 0.0)
+            return STTResult(text=normalized, confidence=confidence, provider=self.name, empty=not bool(normalized))
         audio_path = _payload_audio_path(payload)
         health = self.health()
         if not audio_path or not health.available:
             return STTResult(text="", confidence=0.0, provider=self.name, empty=True)
-        query = urllib.parse.urlencode({"model": self.model_name, "smart_format": "true"})
+        query_params = [
+            ("model", self.model_name),
+            ("language", self.language),
+            ("smart_format", "true"),
+            ("punctuate", "true"),
+        ]
+        query_params.extend(("keyterm", term) for term in self.keyterms)
+        query = urllib.parse.urlencode(query_params)
         request = urllib.request.Request(
             f"{self.endpoint}?{query}",
             data=audio_path.read_bytes(),
@@ -375,7 +425,7 @@ class DeepgramSTT(TextPayloadSTT):
             self._last_error = str(exc)
             return STTResult(text="", confidence=0.0, provider=self.name, empty=True)
         transcript, confidence = _deepgram_transcript(data)
-        normalized = clean_transcript(transcript)
+        normalized = clean_transcript(transcript, keyterms=self.keyterms)
         self._last_error = None
         return STTResult(text=normalized, confidence=confidence, provider=self.name, empty=not bool(normalized))
 
@@ -383,8 +433,8 @@ class DeepgramSTT(TextPayloadSTT):
         if not self._api_key():
             return ProviderHealth("stt", self.name, configured=True, active=False, available=False, detail="Deepgram API key is missing. Set DEEPGRAM_API_KEY.", fallback_to="browser")
         if self._last_error:
-            return ProviderHealth("stt", self.name, configured=True, active=True, available=True, detail=f"Ready with model {self.model_name}; last transcription warning: {self._last_error}")
-        return ProviderHealth("stt", self.name, configured=True, active=True, available=True, detail=f"Ready with model {self.model_name}.")
+            return ProviderHealth("stt", self.name, configured=True, active=True, available=True, detail=f"Ready with model {self.model_name} ({self.language}); last transcription warning: {self._last_error}")
+        return ProviderHealth("stt", self.name, configured=True, active=True, available=True, detail=f"Ready with model {self.model_name} ({self.language}) and {len(self.keyterms)} keyterm hint(s).")
 
     def _api_key(self) -> str:
         return self.api_key or get_secret("DEEPGRAM_API_KEY")
@@ -409,6 +459,145 @@ class BrowserSpeechTTS:
 
     def health(self) -> ProviderHealth:
         return ProviderHealth("tts", self.name, configured=True, active=True, available=True, detail="Browser SpeechSynthesis handles playback.")
+
+
+class DeepgramTTS:
+    name = "deepgram"
+    _stream_ttl_seconds = 90.0
+    _max_pending_streams = 24
+
+    def __init__(
+        self,
+        *,
+        model_name: str | None = None,
+        rate: float = 1.0,
+        api_key: str | None = None,
+        endpoint: str = "https://api.deepgram.com/v1/speak",
+        timeout: float = 20.0,
+    ) -> None:
+        self.model_name = model_name or "aura-2-orion-en"
+        self.rate = max(0.7, min(1.5, float(rate)))
+        self.api_key = api_key
+        self.endpoint = endpoint
+        self.timeout = timeout
+        self._last_error: str | None = None
+        self._pending_streams: dict[str, tuple[float, str]] = {}
+        self._stream_lock = threading.Lock()
+
+    def speak(self, text: str, *, voice: str = "ULTRON") -> dict[str, Any]:
+        clean = " ".join(text.strip().split())
+        if not clean:
+            return {"status": "empty", "provider": self.name, "voice": voice}
+        health = self.health()
+        if not health.available:
+            return {"status": "unavailable", "provider": self.name, "voice": voice, "message": health.detail, "text": clean}
+        if len(clean) > 2000:
+            return {
+                "status": "unavailable",
+                "provider": self.name,
+                "voice": voice,
+                "message": "Deepgram TTS input exceeded 2000 characters; using the browser fallback.",
+                "text": clean,
+            }
+        stream_id = self._queue_stream(clean)
+        self._last_error = None
+        return {
+            "status": "audio_stream",
+            "provider": self.name,
+            "voice": voice,
+            "model": self.model_name,
+            "mime_type": "audio/mpeg",
+            "stream_id": stream_id,
+            "speed": self.rate,
+            "text": clean,
+        }
+
+    def open_audio_stream(self, stream_id: str) -> Any:
+        clean = self._take_stream(stream_id)
+        request = self._build_request(clean)
+        try:
+            response = urllib.request.urlopen(request, timeout=self.timeout)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:300]
+            self._last_error = f"HTTP {exc.code}: {detail or exc.reason}"
+            raise RuntimeError(self._last_error) from exc
+        except (OSError, urllib.error.URLError) as exc:
+            self._last_error = str(exc)
+            raise RuntimeError(self._last_error) from exc
+        self._last_error = None
+        return response
+
+    def stop(self) -> dict[str, Any]:
+        with self._stream_lock:
+            self._pending_streams.clear()
+        return {"status": "stopped", "provider": self.name}
+
+    def health(self) -> ProviderHealth:
+        if not self._api_key():
+            return ProviderHealth(
+                "tts",
+                self.name,
+                configured=True,
+                active=False,
+                available=False,
+                detail="Deepgram API key is missing. Set DEEPGRAM_API_KEY.",
+                fallback_to="browser_speech_synthesis",
+            )
+        detail = f"Aura-2 neural voice ready with model {self.model_name}."
+        if self._last_error:
+            detail = f"{detail} Last synthesis warning: {self._last_error}"
+        return ProviderHealth("tts", self.name, configured=True, active=True, available=True, detail=detail)
+
+    def _api_key(self) -> str:
+        return self.api_key or get_secret("DEEPGRAM_API_KEY")
+
+    def _build_request(self, text: str) -> urllib.request.Request:
+        query = urllib.parse.urlencode(
+            {
+                "model": self.model_name,
+                "encoding": "mp3",
+                "bit_rate": "48000",
+                "speed": f"{self.rate:.2f}",
+            }
+        )
+        return urllib.request.Request(
+            f"{self.endpoint}?{query}",
+            data=json.dumps({"text": text}).encode("utf-8"),
+            headers={
+                "Authorization": f"Token {self._api_key()}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+
+    def _queue_stream(self, text: str) -> str:
+        now = time.monotonic()
+        stream_id = uuid.uuid4().hex
+        with self._stream_lock:
+            self._discard_expired_streams(now)
+            while len(self._pending_streams) >= self._max_pending_streams:
+                oldest = next(iter(self._pending_streams))
+                self._pending_streams.pop(oldest, None)
+            self._pending_streams[stream_id] = (now, text)
+        return stream_id
+
+    def _take_stream(self, stream_id: str) -> str:
+        now = time.monotonic()
+        with self._stream_lock:
+            self._discard_expired_streams(now)
+            pending = self._pending_streams.pop(stream_id, None)
+        if pending is None:
+            raise KeyError("Unknown or expired speech stream.")
+        return pending[1]
+
+    def _discard_expired_streams(self, now: float) -> None:
+        expired = [
+            stream_id
+            for stream_id, (created_at, _text) in self._pending_streams.items()
+            if now - created_at > self._stream_ttl_seconds
+        ]
+        for stream_id in expired:
+            self._pending_streams.pop(stream_id, None)
 
 
 class PiperTTS:
@@ -570,6 +759,23 @@ class SoundDeviceMicrophoneCapture:
             return {"status": "error", "provider": self.name, "message": f"Microphone capture failed: {exc}"}
 
         raw = audio.tobytes()
+        energy = _pcm16_energy(raw)
+        peak_times = _pcm16_peak_times(raw, self.sample_rate)
+        speech_ms = int(seconds * 1000) if energy > 0.012 else 0
+        if bool(payload.get("energy_only")):
+            return {
+                "status": "ok",
+                "provider": self.name,
+                "energy_only": True,
+                "audio_duration_ms": int(seconds * 1000),
+                "speech_ms": speech_ms,
+                "audio_energy": energy,
+                "audio_peak_times_s": peak_times,
+                "sample_rate": self.sample_rate,
+                "microphone": self.device or "default",
+                "message": "Backend microphone energy capture completed.",
+            }
+
         output = tempfile.NamedTemporaryFile(prefix="ultron-mic-", suffix=".wav", delete=False)
         output.close()
         path = Path(output.name)
@@ -582,15 +788,15 @@ class SoundDeviceMicrophoneCapture:
         except Exception as exc:  # pragma: no cover - filesystem defensive
             return {"status": "error", "provider": self.name, "message": f"Could not save captured audio: {exc}"}
 
-        energy = _pcm16_energy(raw)
-        speech_ms = int(seconds * 1000) if energy > 0.012 else 0
         return {
             "status": "ok",
             "provider": self.name,
             "audio_path": str(path),
+            "temporary_audio": True,
             "audio_duration_ms": int(seconds * 1000),
             "speech_ms": speech_ms,
             "audio_energy": energy,
+            "audio_peak_times_s": peak_times,
             "sample_rate": self.sample_rate,
             "microphone": self.device or "default",
             "message": "Backend microphone capture completed.",
@@ -638,6 +844,7 @@ class VoiceSession:
             configured_stt_provider=self.configured_stt.name,
             configured_tts_provider=self.configured_tts.name,
             voice_identity=self.provider_config.voice_identity,
+            voice_preference=self.provider_config.voice_preference,
             voice_rate=self.provider_config.rate,
             voice_pitch=self.provider_config.pitch,
             voice_volume=self.provider_config.volume,
@@ -688,10 +895,23 @@ class VoiceSession:
         if audio["rejected"] and not (payload.get("transcript") or payload.get("text")):
             self.status.last_error = str(audio["reason"])
             self._update_diagnostics(payload, None, status="rejected", detail=self.status.last_error, audio=audio)
+            _cleanup_temporary_audio(payload)
             return self.snapshot({"status": "empty", "message": self.status.last_error, "audio": audio, "voice_diagnostics": self.diagnostics.to_dict()})
-        result = self.stt.transcribe(payload)
+        try:
+            result = self.stt.transcribe(payload)
+        finally:
+            _cleanup_temporary_audio(payload)
+        if bool(payload.get("command_capture")):
+            command_text = strip_wake_greeting(result.text)
+            if command_text != result.text:
+                result = STTResult(
+                    text=command_text,
+                    confidence=result.confidence,
+                    provider=result.provider,
+                    empty=not bool(command_text),
+                )
         self._update_diagnostics(payload, result, status="transcribed", detail="Transcript received.", audio=audio)
-        if result.empty or _looks_like_empty_audio(payload):
+        if result.empty or (not result.text.strip() and _looks_like_empty_audio(payload)):
             self.status.last_error = "No speech was detected."
             self._update_diagnostics(payload, result, status="empty", detail=self.status.last_error, audio=audio)
             return self.snapshot({"status": "empty", "transcript": result.to_dict(), "audio": audio, "message": self.status.last_error, "voice_diagnostics": self.diagnostics.to_dict()})
@@ -718,7 +938,8 @@ class VoiceSession:
             self.status.last_error = "Transcript confidence was too low."
             self.status.speaking = not self.status.muted
             if self.wake_status.always_listening:
-                self.wake_status.mode = "speaking" if self.status.speaking else "waiting_for_wake_word"
+                self.wake_status.mode = "listening"
+                self.status.listening = True
             self._update_diagnostics(payload, result, status="clarification_required", detail=self.status.last_error, audio=audio)
             return self.snapshot(
                 {
@@ -727,6 +948,7 @@ class VoiceSession:
                     "audio": audio,
                     "spoken_response": spoken_response,
                     "needs_confirmation": False,
+                    "continue_listening": True,
                     "record": record.to_dict(),
                     "voice_diagnostics": self.diagnostics.to_dict(),
                 }
@@ -736,6 +958,7 @@ class VoiceSession:
         task = command_payload.get("task") if isinstance(command_payload, dict) else None
         spoken_response = response_for_task(task, command_payload.get("subtitle") if isinstance(command_payload, dict) else None)
         needs_confirmation = bool(task and task.get("status") == "waiting_for_confirmation")
+        continue_listening = first_tool(task) == "assistant_reply" and not needs_confirmation
         if needs_confirmation:
             self.status.pending_confirmation_goal = goal
             spoken_response = "I need explicit confirmation before doing that. Say yes confirm or click Confirm."
@@ -754,7 +977,11 @@ class VoiceSession:
         self._remember(record)
         self.status.speaking = not self.status.muted
         if self.wake_status.always_listening:
-            self.wake_status.mode = "speaking" if self.status.speaking else "waiting_for_wake_word"
+            if continue_listening:
+                self.wake_status.mode = "listening"
+                self.status.listening = True
+            else:
+                self.wake_status.mode = "speaking" if self.status.speaking else "waiting_for_wake_word"
         self.status.last_error = None
         return self.snapshot(
             {
@@ -763,8 +990,10 @@ class VoiceSession:
                 "audio": audio,
                 "confirmed": confirmed,
                 "task": task,
+                "ui_directive": command_payload.get("ui_directive") if isinstance(command_payload, dict) else None,
                 "spoken_response": spoken_response,
                 "needs_confirmation": needs_confirmation,
+                "continue_listening": continue_listening,
                 "record": record.to_dict(),
                 "voice_diagnostics": self.diagnostics.to_dict(),
             }
@@ -825,6 +1054,12 @@ class VoiceSession:
         self.status.speaking = payload.get("status") not in {"empty", "error", "unavailable"}
         return self.snapshot({"status": "ok", "speech": payload})
 
+    def open_tts_stream(self, stream_id: str) -> Any:
+        open_stream = getattr(self.tts, "open_audio_stream", None)
+        if not callable(open_stream):
+            raise KeyError("The active voice provider does not expose audio streams.")
+        return open_stream(stream_id)
+
     def stop_speaking(self) -> dict[str, Any]:
         payload = self.tts.stop()
         self.status.speaking = False
@@ -833,13 +1068,19 @@ class VoiceSession:
         return self.snapshot({"status": "ok", "speech": payload})
 
     def start_wake(self) -> dict[str, Any]:
+        if hasattr(self.wake, "reset"):
+            self.wake.reset()
         self.wake_status.always_listening = True
         self.wake_status.mode = "waiting_for_wake_word"
         self.wake_status.wake_word_detected = False
         self.wake_status.voice_detected = False
         self.wake_status.noisy_ignored = False
         self.wake_status.last_wake_phrase = None
-        self.wake_status.last_event = "Always-listening mode is waiting for ULTRON."
+        self.wake_status.last_event = (
+            "Voice standby. Double clap to wake me."
+            if self.wake.name == "double_clap"
+            else "Always-listening mode is waiting for ULTRON."
+        )
         self.status.microphone_enabled = True
         self.status.listening = False
         self.status.push_to_talk = False
@@ -860,28 +1101,74 @@ class VoiceSession:
     def wake_snapshot(self) -> dict[str, Any]:
         return self.snapshot({"status": "ok", **self.gate_status()})
 
+    def cleanup_capture(self, payload: dict[str, Any]) -> None:
+        _cleanup_temporary_audio(payload)
+
     def process_wake_input(self, payload: dict[str, Any], command_runner) -> dict[str, Any]:
         if not self.wake_status.always_listening:
             self.wake_status.mode = "inactive"
             self.wake_status.last_event = "Always-listening mode is off."
             return self.snapshot({"status": "inactive", "message": self.wake_status.last_event, **self.gate_status()})
 
-        early_wake_result = self.wake.detect(payload) if self.wake.name == "double_clap" else None
+        already_listening = self.wake_status.mode == "listening"
+        authorized_command_audio = bool(
+            already_listening
+            and payload.get("command_capture")
+            and _payload_audio_path(payload) is not None
+        )
+        early_wake_result = self.wake.detect(payload) if self.wake.name == "double_clap" and not already_listening else None
         vad_result = self.vad.detect(payload)
         self.wake_status.voice_detected = bool(vad_result.speech)
         self.wake_status.noisy_ignored = bool(vad_result.noisy or not vad_result.speech)
-        if not vad_result.speech:
+        if bool(payload.get("energy_only")) and self.diagnostics.status in {"idle", "wake_monitoring"}:
+            self._update_diagnostics(
+                payload,
+                None,
+                status="wake_monitoring",
+                detail="Clap standby energy sample processed without speech-to-text.",
+            )
+        if not vad_result.speech and not authorized_command_audio:
+            if self.wake_status.mode == "listening":
+                if bool(payload.get("command_capture")):
+                    self.wake_status.mode = "waiting_for_wake_word"
+                    self.wake_status.wake_word_detected = False
+                    self.wake_status.last_wake_phrase = None
+                    self.wake_status.last_event = "I did not hear a command. Double clap when you are ready, sir."
+                    self.status.listening = False
+                    return self.snapshot(
+                        {
+                            "status": "no_command",
+                            "message": self.wake_status.last_event,
+                            "vad": vad_result.to_dict(),
+                            "command_executed": False,
+                            **self.gate_status(),
+                        }
+                    )
+                self.wake_status.wake_word_detected = True
+                self.wake_status.last_event = "Listening for a command, sir."
+                self.status.listening = True
+                return self.snapshot(
+                    {
+                        "status": "ignored",
+                        "message": self.wake_status.last_event,
+                        "vad": vad_result.to_dict(),
+                        "command_executed": False,
+                        **self.gate_status(),
+                    }
+                )
             if early_wake_result is not None and early_wake_result.detected:
                 self.wake_status.mode = "listening"
                 self.wake_status.wake_word_detected = True
                 self.wake_status.noisy_ignored = False
                 self.wake_status.last_wake_phrase = early_wake_result.phrase
-                self.wake_status.last_event = "Double clap detected. Listening for a command."
+                self.wake_status.last_event = "Double clap detected. At your service, sir."
                 self.status.listening = True
                 return self.snapshot(
                     {
                         "status": "wake_detected",
                         "message": self.wake_status.last_event,
+                        "spoken_response": WAKE_GREETING,
+                        "listen_after_greeting": True,
                         "wake_detection": early_wake_result.to_dict(),
                         "vad": vad_result.to_dict(),
                         "command_executed": False,
@@ -902,7 +1189,11 @@ class VoiceSession:
                 }
             )
 
-        wake_result = early_wake_result or self.wake.detect(payload)
+        wake_result = early_wake_result or (
+            WakeWordResult(False, provider=self.wake.name)
+            if already_listening
+            else self.wake.detect(payload)
+        )
         raw_text = str(payload.get("transcript") or payload.get("text") or "").strip()
         if self.wake_status.mode != "listening" and not wake_result.detected:
             self.wake_status.wake_word_detected = False
@@ -926,12 +1217,14 @@ class VoiceSession:
             authorized_text = strip_wake_phrase(raw_text, self.wake_status.wake_phrases)
             if not authorized_text:
                 self.wake_status.mode = "listening"
-                self.wake_status.last_event = "Wake word detected. Listening for a command."
+                self.wake_status.last_event = "Wake detected. At your service, sir."
                 self.status.listening = True
                 return self.snapshot(
                     {
                         "status": "wake_detected",
                         "message": self.wake_status.last_event,
+                        "spoken_response": WAKE_GREETING,
+                        "listen_after_greeting": True,
                         "wake_detection": wake_result.to_dict(),
                         "vad": vad_result.to_dict(),
                         "command_executed": False,
@@ -946,9 +1239,20 @@ class VoiceSession:
         command_payload["wake_authorized"] = True
         voice_payload = self.transcribe_and_run(command_payload, command_runner)
         if voice_payload.get("status") == "empty":
-            self.wake_status.mode = "listening"
+            command_capture = bool(payload.get("command_capture"))
+            self.wake_status.mode = "waiting_for_wake_word" if command_capture else "listening"
             self.wake_status.noisy_ignored = True
-            self.wake_status.last_event = str(voice_payload.get("message", "No speech was detected."))
+            self.wake_status.wake_word_detected = not command_capture
+            self.wake_status.last_wake_phrase = None if command_capture else self.wake_status.last_wake_phrase
+            self.status.listening = not command_capture
+            if command_capture:
+                self.status.speaking = False
+                self.wake_status.last_event = "I did not hear a command. Double clap when you are ready, sir."
+                voice_payload["status"] = "no_command"
+                voice_payload["message"] = self.wake_status.last_event
+                voice_payload["voice"] = self.status.to_dict()
+            else:
+                self.wake_status.last_event = str(voice_payload.get("message", "No speech was detected."))
             return self.snapshot(
                 {
                     **voice_payload,
@@ -994,6 +1298,7 @@ class VoiceSession:
             },
             "voice_identity": self.provider_config.voice_identity,
             "speech_settings": {
+                "voice_preference": self.provider_config.voice_preference,
                 "rate": self.provider_config.rate,
                 "pitch": self.provider_config.pitch,
                 "volume": self.provider_config.volume,
@@ -1077,7 +1382,7 @@ def build_voice_session(config: Any | None = None) -> VoiceSession:
     stt = requested_stt if _health(requested_stt, kind="stt", configured=True, active=False).available else BrowserTranscriptSTT()
     tts = requested_tts if _health(requested_tts, kind="tts", configured=True, active=False).available else BrowserSpeechTTS()
     capture = requested_capture if _health(requested_capture, kind="capture", configured=True, active=False).available else BrowserMicrophoneCapture()
-    return VoiceSession(
+    session = VoiceSession(
         stt=stt,
         tts=tts,
         capture=capture,
@@ -1091,9 +1396,12 @@ def build_voice_session(config: Any | None = None) -> VoiceSession:
         provider_config=provider_config,
         wake_config=wake_config,
     )
+    if config is not None and bool(getattr(config, "wake_auto_start", False)):
+        session.start_wake()
+    return session
 
 
-def clean_transcript(text: str) -> str:
+def clean_transcript(text: str, *, keyterms: Iterable[str] = ()) -> str:
     value = strip_wake_word(text)
     value = re.sub(r"\b(?:uh+|um+|erm|hmm)\b[\s,.-]*", "", value, flags=re.IGNORECASE)
     value = re.sub(r"^(?:please\s+|can\s+you\s+|could\s+you\s+)", "", value, flags=re.IGNORECASE)
@@ -1105,12 +1413,53 @@ def clean_transcript(text: str) -> str:
     )
     value = _dedupe_repeated_words(value)
     value = re.sub(r"\s+", " ", value).strip(" .!?\"'")
+    value = _restore_keyterms(value, keyterms)
     return value
+
+
+def _restore_keyterms(text: str, keyterms: Iterable[str]) -> str:
+    value = re.sub(r"\bwhats\s+app\b", "WhatsApp", text, flags=re.IGNORECASE)
+    words = value.split()
+    for term in sorted(_dedupe_keyterms(keyterms), key=lambda item: len(item.split()), reverse=True):
+        canonical_words = term.split()
+        width = len(canonical_words)
+        target = " ".join(_speech_token(word) for word in canonical_words)
+        if not target:
+            continue
+        threshold = 0.80 if width > 1 else 0.86
+        index = 0
+        while index + width <= len(words):
+            candidate = " ".join(_speech_token(word) for word in words[index : index + width])
+            if candidate and SequenceMatcher(None, candidate, target).ratio() >= threshold:
+                trailing = re.search(r"([^\w]+)$", words[index + width - 1], flags=re.UNICODE)
+                replacement = list(canonical_words)
+                if trailing:
+                    replacement[-1] = f"{replacement[-1]}{trailing.group(1)}"
+                words[index : index + width] = replacement
+                index += width
+            else:
+                index += 1
+    return " ".join(words)
+
+
+def _speech_token(value: str) -> str:
+    return re.sub(r"[^\w]+", "", value.casefold(), flags=re.UNICODE)
 
 
 def strip_wake_word(text: str) -> str:
     value = " ".join(text.strip().split())
     value = re.sub(r"^(?:hey\s+)?ultron[\s,.:;-]+", "", value, flags=re.IGNORECASE)
+    return value.strip()
+
+
+def strip_wake_greeting(text: str) -> str:
+    value = " ".join(text.strip().split())
+    value = re.sub(
+        r"^(?:at\s+your\s+service(?:\s*,?\s*sir)?|your\s+service\s*,?\s*sir|service\s*,?\s*sir)\b[\s,.:;-]*",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
     return value.strip()
 
 
@@ -1237,7 +1586,7 @@ def _create_stt_provider(config: VoiceProviderConfig) -> STTProvider:
     if provider == "whisper_cpp":
         return WhisperCppSTT(config.stt_model_path, device=config.device)
     if provider == "deepgram":
-        return DeepgramSTT(model_name=config.stt_model)
+        return DeepgramSTT(model_name=config.stt_model, language=config.stt_language, keyterms=config.stt_keyterms)
     if provider == "browser":
         return BrowserTranscriptSTT()
     if provider == "mock":
@@ -1247,6 +1596,8 @@ def _create_stt_provider(config: VoiceProviderConfig) -> STTProvider:
 
 def _create_tts_provider(config: VoiceProviderConfig) -> TTSProvider:
     provider = "browser_speech_synthesis" if config.tts_provider == "browser" else config.tts_provider
+    if provider == "deepgram":
+        return DeepgramTTS(model_name=config.tts_model, rate=config.rate)
     if provider == "piper":
         return PiperTTS(
             config.tts_model_path,
@@ -1290,6 +1641,18 @@ def _payload_audio_path(payload: dict[str, Any]) -> Path | None:
         return None
     path = Path(str(raw)).expanduser()
     return path if path.exists() and path.is_file() else None
+
+
+def _cleanup_temporary_audio(payload: dict[str, Any]) -> None:
+    if not bool(payload.get("temporary_audio")):
+        return
+    raw = payload.get("audio_path")
+    if not raw:
+        return
+    try:
+        Path(str(raw)).expanduser().unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _audio_content_type(path: Path) -> str:
@@ -1365,3 +1728,35 @@ def _pcm16_energy(raw: bytes) -> float:
         sample = int.from_bytes(raw[index : index + 2], byteorder="little", signed=True)
         total += (sample / 32768.0) ** 2
     return min(1.0, (total / sample_count) ** 0.5)
+
+
+def _pcm16_peak_times(raw: bytes, sample_rate: int) -> list[float]:
+    if not raw or sample_rate <= 0:
+        return []
+    sample_count = len(raw) // 2
+    if sample_count <= 0:
+        return []
+    window = max(1, int(sample_rate * 0.018))
+    hop = max(1, int(sample_rate * 0.012))
+    rms_values: list[tuple[int, float]] = []
+    for start in range(0, sample_count - window + 1, hop):
+        total = 0.0
+        for index in range(start, start + window):
+            byte_index = index * 2
+            sample = int.from_bytes(raw[byte_index : byte_index + 2], byteorder="little", signed=True)
+            total += (sample / 32768.0) ** 2
+        rms_values.append((start, (total / window) ** 0.5))
+    if not rms_values:
+        return []
+    baseline = sorted(value for _start, value in rms_values)[len(rms_values) // 2]
+    threshold = max(0.035, baseline * 6.0)
+    peaks: list[float] = []
+    last_peak_s = -1.0
+    for start, value in rms_values:
+        when = start / sample_rate
+        if value >= threshold and (last_peak_s < 0 or when - last_peak_s >= 0.07):
+            peaks.append(round(when, 3))
+            last_peak_s = when
+            if len(peaks) >= 4:
+                break
+    return peaks

@@ -1,13 +1,16 @@
 {
   "dataset_path": "data/jarvis_dataset_v2/jarvis_laptop_commands_synthetic_v2.jsonl",
   "audit_log": ".ultron/audit.jsonl",
-  "dry_run": true,
+  "dry_run": false,
   "workspace": ".",
   "safe_roots": [
     ".",
     "~/Desktop",
     "~/Documents",
-    "~/Downloads"
+    "~/Downloads",
+    "~/Pictures",
+    "~/Music",
+    "~/Videos"
   ],
   "screenshot_dir": ".ultron/screenshots",
   "app_aliases": {
@@ -16,6 +19,10 @@
     "vs code": "code",
     "vscode": "code",
     "notepad": "notepad.exe",
+    "settings": "ms-settings:",
+    "camera": "microsoft.windows.camera:",
+    "task manager": "taskmgr.exe",
+    "control panel": "control.exe",
     "spotify": "spotify.exe",
     "calculator": "calc.exe",
     "calc": "calc.exe",
@@ -23,6 +30,8 @@
     "explorer": "explorer.exe",
     "terminal": "wt.exe"
   },
+  "whatsapp_contacts": {},
+  "whatsapp_require_confirmation": false,
   "planner_mode": "hybrid",
   "llm_provider": "groq",
   "llm_model": "openai/gpt-oss-20b",
@@ -34,23 +43,42 @@
   "voice_capture_provider": "sounddevice",
   "voice_microphone_device": null,
   "voice_sample_rate": 16000,
-  "voice_capture_seconds": 4,
-  "voice_tts_provider": "browser_speech_synthesis",
+  "voice_capture_seconds": 6,
+  "voice_tts_provider": "deepgram",
   "voice_stt_model": "nova-3",
+  "voice_tts_model": "aura-2-orion-en",
+  "voice_stt_language": "multi",
+  "voice_stt_keyterms": [
+    "ULTRON",
+    "WhatsApp",
+    "Spotify",
+    "Groq",
+    "Deepgram",
+    "Em Hitansh"
+  ],
   "voice_stt_model_path": null,
   "voice_tts_model_path": null,
   "voice_tts_voice_path": null,
   "voice_device": "cpu",
   "voice_identity": "ULTRON",
-  "voice_rate": 0.94,
-  "voice_pitch": 0.86,
-  "voice_volume": 0.95,
-  "wake_word_provider": "text",
+  "voice_preference": "Microsoft George",
+  "voice_rate": 1.03,
+  "voice_pitch": 1.0,
+  "voice_volume": 1.0,
+  "wake_word_provider": "double_clap",
+  "wake_auto_start": true,
   "wake_phrases": [
     "ULTRON",
     "Hey ULTRON"
   ],
   "wake_model_path": null,
   "vad_provider": "energy",
-  "vad_energy_threshold": 0.015
+  "vad_energy_threshold": 0.015,
+  "clap_spike_ratio": 7.0,
+  "clap_min_gap_s": 0.05,
+  "clap_max_gap_s": 0.35,
+  "clap_cooldown_s": 0.45,
+  "startup_briefing_enabled": true,
+  "assistant_location": "Jabalpur",
+  "speech_barge_in_enabled": true
 }

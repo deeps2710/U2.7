@@ -191,10 +191,24 @@ class DoubleClapWakeProvider:
             return text_result
 
         level = _payload_energy(payload)
+        peak_times = _payload_peak_times(payload)
         if level is None:
             return WakeWordResult(False, provider=self.name)
 
         now = _payload_timestamp(payload)
+        if peak_times:
+            detected = WakeWordResult(False, provider=self.name)
+            for offset in peak_times:
+                detected = self._detect_level(level, now + offset)
+                if detected.detected:
+                    return detected
+                if self.first_clap_time is not None:
+                    self.spike_armed = True
+            return detected
+
+        return self._detect_level(level, now)
+
+    def _detect_level(self, level: float, now: float) -> WakeWordResult:
         quiet_gate = self.noise_floor * self.config.clap_quiet_gate_mult
         if level < quiet_gate:
             alpha = _clamp_float(self.config.clap_noise_floor_alpha, 0.0, 0.9999)
@@ -225,6 +239,11 @@ class DoubleClapWakeProvider:
 
         self.first_clap_time = now
         return WakeWordResult(False, provider=self.name)
+
+    def reset(self) -> None:
+        self.last_logged_double = 0.0
+        self.first_clap_time = None
+        self.spike_armed = True
 
     def health(self) -> GateProviderHealth:
         return GateProviderHealth(
@@ -392,6 +411,19 @@ def _payload_timestamp(payload: dict[str, Any]) -> float:
         except (TypeError, ValueError):
             pass
     return time.monotonic()
+
+
+def _payload_peak_times(payload: dict[str, Any]) -> list[float]:
+    value = payload.get("audio_peak_times_s") or payload.get("peak_times_s")
+    if not isinstance(value, list):
+        return []
+    peaks: list[float] = []
+    for item in value[:8]:
+        try:
+            peaks.append(max(0.0, float(item)))
+        except (TypeError, ValueError):
+            continue
+    return peaks
 
 
 def _normalize_phrase(phrase: str) -> str:

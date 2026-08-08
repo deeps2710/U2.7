@@ -75,6 +75,9 @@ def dependency_status() -> dict[str, Any]:
         "pypdf": "pypdf for PDF text checks and knowledge ingestion",
         "PIL": "Pillow for screenshots and PDF preview images",
         "pytest": "pytest for optional test runner support",
+        "webview": "pywebview native desktop shell",
+        "numpy": "audio analysis and backend microphone capture",
+        "sounddevice": "backend microphone capture",
         "faster_whisper": "optional local STT",
         "pyttsx3": "optional local Windows TTS",
     }

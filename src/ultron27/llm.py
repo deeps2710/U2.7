@@ -15,6 +15,10 @@ class LLMPlannerError(RuntimeError):
     pass
 
 
+class LLMChatError(RuntimeError):
+    pass
+
+
 class LLMProvider(Protocol):
     def complete(self, prompt: str, timeout: float) -> str:
         ...
@@ -101,6 +105,48 @@ class GroqProvider:
         return content
 
 
+@dataclass(frozen=True)
+class GroqChatProvider:
+    endpoint: str
+    model: str
+    api_key: str | None = None
+
+    def complete_chat(self, messages: list[dict[str, str]], timeout: float, *, max_tokens: int = 180) -> str:
+        key = self.api_key or get_secret("GROQ_API_KEY")
+        if not key:
+            raise LLMChatError("Groq API key is missing. Set GROQ_API_KEY.")
+        payload = {
+            "model": self.model,
+            "temperature": 0.65,
+            "max_tokens": max_tokens,
+            "messages": messages,
+        }
+        request = urllib.request.Request(
+            _chat_completions_url(self.endpoint),
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "ultron27/0.1",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            raise LLMChatError(f"Groq chat request failed: {exc}") from exc
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise LLMChatError("Groq chat response did not include choices")
+        message = choices[0].get("message") if isinstance(choices[0], dict) else None
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, str) or not content.strip():
+            raise LLMChatError("Groq chat response did not include choices[0].message.content")
+        return content.strip()
+
+
 class LLMPlanner:
     def __init__(self, provider: LLMProvider, timeout: float = 8.0, *, min_confidence: float = 0.52):
         self.provider = provider
@@ -176,10 +222,20 @@ def build_prompt(utterance: str) -> str:
         '- "launch notepad" -> {"intent":"open_app","tool_name":"open_application","tool_arguments":{"app":"notepad"},"confidence":0.92}\n'
         '- "bring up notepad" -> {"intent":"open_app","tool_name":"open_application","tool_arguments":{"app":"notepad"},"confidence":0.9}\n'
         '- "start the notes app" -> {"intent":"open_app","tool_name":"open_application","tool_arguments":{"app":"notepad"},"confidence":0.82}\n'
+        '- "open notepad and write alien in it" -> {"intent":"write_text_in_app","tool_name":"write_text_in_application","tool_arguments":{"app":"notepad","text":"alien"},"confidence":0.88}\n'
+        '- "type hello into notepad" -> {"intent":"write_text_in_app","tool_name":"write_text_in_application","tool_arguments":{"app":"notepad","text":"hello"},"confidence":0.86}\n'
+        '- "turn the volume up by 10 percent" -> {"intent":"adjust_volume","tool_name":"adjust_system_volume","tool_arguments":{"direction":"up","delta":10},"confidence":0.94}\n'
+        '- "unmute the sound" -> {"intent":"unmute_volume","tool_name":"mute_system_volume","tool_arguments":{"mute":false},"confidence":0.96}\n'
+        '- "play the next song" -> {"intent":"next_track","tool_name":"next_media_track","tool_arguments":{},"confidence":0.95}\n'
         '- "play blinding lights on Spotify" -> {"intent":"play_music","tool_name":"play_music","tool_arguments":{"query":"blinding lights"},"confidence":0.91}\n'
         '- "put on some lofi music" -> {"intent":"play_music","tool_name":"play_music","tool_arguments":{"query":"lofi music"},"confidence":0.78}\n'
+        '- "send a WhatsApp message to Mom saying I will be home at seven" -> {"intent":"send_whatsapp_message","tool_name":"send_whatsapp_message","tool_arguments":{"recipient":"Mom","message":"I will be home at seven"},"confidence":0.94}\n'
         '- "write this in notepad" -> {"intent":"clarify_intent","tool_name":"ask_clarification","tool_arguments":{"question":"What text should I write in Notepad?"},"confidence":0.72,"needs_clarification":true}\n'
         '- "jot this down: voice mode works" -> {"intent":"create_note","tool_name":"create_note","tool_arguments":{"title":"quick note","content":"voice mode works"},"confidence":0.78}\n\n'
+        '- "search YouTube for Python tutorials" -> {"intent":"open_website","tool_name":"open_website","tool_arguments":{"site":"youtube","query":"Python tutorials"},"confidence":0.94}\n'
+        '- "what is 15 percent of 200" -> {"intent":"calculate","tool_name":"calculate","tool_arguments":{"expression":"15 percent of 200"},"confidence":0.96}\n'
+        '- "how much battery is left" -> {"intent":"get_battery","tool_name":"get_system_status","tool_arguments":{"category":"battery"},"confidence":0.95}\n'
+        '- "find PDF files in Downloads" -> {"intent":"search_files","tool_name":"search_files","tool_arguments":{"query":"*","file_type":"pdf","folder":"Downloads"},"confidence":0.93}\n\n'
         f"Available tools:\n{tools}\n\n"
         f"User command: {utterance}"
     )

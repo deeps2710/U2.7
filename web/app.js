@@ -1,5 +1,9 @@
 import * as THREE from "./vendor/three.module.min.js";
 import { createArmillaryCore } from "./ultron-core.js";
+import { createHandGestureController } from "./hand-gestures.js";
+import { createDesktopGestureInterpreter } from "./hand-mouse.js";
+import { createPhotoReliefModeler } from "./photo-modeler.js";
+import { createObjectScanner } from "./object-scanner.js";
 
 const canvas = document.getElementById("ultron-scene");
 const subtitlePanel = document.getElementById("subtitlePanel");
@@ -48,6 +52,8 @@ const knowledgeSearchButton = document.getElementById("knowledgeSearchButton");
 const knowledgeList = document.getElementById("knowledgeList");
 const recentTasksList = document.getElementById("recentTasksList");
 const stateButtons = [...document.querySelectorAll("[data-state]")];
+const drawerTabs = [...document.querySelectorAll("[data-drawer-tab]")];
+const drawerPanels = [...document.querySelectorAll("[data-drawer-panel]")];
 const confirmationModal = document.getElementById("confirmationModal");
 const confirmationTitle = document.getElementById("confirmationTitle");
 const confirmationMessage = document.getElementById("confirmationMessage");
@@ -55,6 +61,68 @@ const confirmationTool = document.getElementById("confirmationTool");
 const confirmationPermission = document.getElementById("confirmationPermission");
 const approveConfirmationButton = document.getElementById("approveConfirmationButton");
 const cancelConfirmationButton = document.getElementById("cancelConfirmationButton");
+const gestureToggle = document.getElementById("gestureToggle");
+const gestureCursor = document.getElementById("gestureCursor");
+const gestureSystemToggle = document.getElementById("gestureSystemToggle");
+const gesturePauseButton = document.getElementById("gesturePauseButton");
+const gestureModeButtons = [...document.querySelectorAll("[data-gesture-mode]")];
+const desktopGestureModeButton = document.getElementById("desktopGestureModeButton");
+const gestureSensitivitySlider = document.getElementById("gestureSensitivitySlider");
+const gestureSensitivityValue = document.getElementById("gestureSensitivityValue");
+const handControlModeLabel = document.getElementById("handControlModeLabel");
+const handControlStatusLabel = document.getElementById("handControlStatusLabel");
+const handControlStatusDetail = document.getElementById("handControlStatusDetail");
+const handGuideModal = document.getElementById("handGuideModal");
+const handGuideCloseButton = document.getElementById("handGuideCloseButton");
+const handGuideToggleButton = document.getElementById("handGuideToggleButton");
+const handGuideStatusLabel = document.getElementById("handGuideStatusLabel");
+const handGuideStatusDetail = document.getElementById("handGuideStatusDetail");
+const handGuideLiveStatus = document.querySelector(".hand-guide-live-status");
+const handGuideTriggers = [...document.querySelectorAll("[data-open-hand-guide]")];
+const cameraWindow = document.getElementById("cameraWindow");
+const cameraFeed = document.getElementById("cameraFeed");
+const gestureOverlay = document.getElementById("gestureOverlay");
+const objectOverlay = document.getElementById("objectOverlay");
+const cameraSnapshot = document.getElementById("cameraSnapshot");
+const cameraCanvas = document.getElementById("cameraCanvas");
+const cameraCaptureButton = document.getElementById("cameraCaptureButton");
+const cameraStatus = document.getElementById("cameraStatus");
+const cameraPermissionMessage = document.getElementById("cameraPermissionMessage");
+const objectScanProgress = document.getElementById("objectScanProgress");
+const objectScanLabel = document.getElementById("objectScanLabel");
+const objectScanPercent = document.getElementById("objectScanPercent");
+const objectScanMeter = document.getElementById("objectScanMeter");
+const objectScanViews = document.getElementById("objectScanViews");
+const objectScanCancelButton = document.getElementById("objectScanCancelButton");
+const researchWindow = document.getElementById("researchWindow");
+const researchForm = document.getElementById("researchForm");
+const researchQueryInput = document.getElementById("researchQueryInput");
+const researchSubmitButton = document.getElementById("researchSubmitButton");
+const researchStatus = document.getElementById("researchStatus");
+const researchSourceCount = document.getElementById("researchSourceCount");
+const researchSummary = document.getElementById("researchSummary");
+const researchSources = document.getElementById("researchSources");
+const modelWindow = document.getElementById("modelWindow");
+const modelCanvas = document.getElementById("modelCanvas");
+const modelStatus = document.getElementById("modelStatus");
+const modelStats = document.getElementById("modelStats");
+const modelScanButton = document.getElementById("modelScanButton");
+const model360Button = document.getElementById("model360Button");
+const modelScaleSlider = document.getElementById("modelScaleSlider");
+const modelVisibilityButton = document.getElementById("modelVisibilityButton");
+const modelWireframeButton = document.getElementById("modelWireframeButton");
+const modelResetButton = document.getElementById("modelResetButton");
+const modelExportButton = document.getElementById("modelExportButton");
+const runtimeShellLabel = document.getElementById("runtimeShellLabel");
+const startupSequence = document.getElementById("startupSequence");
+const startupStatusText = document.getElementById("startupStatusText");
+const startupProgressBar = document.getElementById("startupProgressBar");
+const startupProgressValue = document.getElementById("startupProgressValue");
+const startupModules = [...document.querySelectorAll("[data-startup-module]")];
+const desktopShell = new URLSearchParams(window.location.search).get("shell") === "desktop";
+
+document.documentElement.dataset.shell = desktopShell ? "desktop" : "browser";
+if (runtimeShellLabel) runtimeShellLabel.textContent = desktopShell ? "Desktop" : "Local";
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(44, window.innerWidth / window.innerHeight, 0.1, 100);
@@ -89,6 +157,73 @@ let alwaysListening = false;
 let pendingConfirmation = null;
 let memoryEnabled = true;
 let detailsCollapsed = window.localStorage.getItem("ultronDetailsCollapsed") !== "false";
+let activeDrawerTab = window.localStorage.getItem("ultronDrawerTab") || "activity";
+let backendWakePolling = false;
+let backendWakeTimer = null;
+let backendWakeBusy = false;
+let backendCommandCaptureActive = false;
+let wakeProvider = null;
+let cameraStream = null;
+let cameraAutoCaptureTimer = null;
+let latestCameraFrame = "";
+let gestureActive = false;
+let gestureGrab = null;
+let gestureLastPoint = null;
+let gestureMode = window.localStorage.getItem("ultronGestureMode") || (desktopShell ? "desktop" : "workspace");
+let gestureSensitivity = Number(window.localStorage.getItem("ultronGestureSensitivity") || 1);
+let desktopBridgeReady = false;
+let desktopHandAvailable = false;
+let desktopHandStatus = null;
+let nativeHandQueue = [];
+let nativeHandDispatching = false;
+let handStatusSnapshot = { state: "off", detail: "Choose a mode, then start hand control", pose: "none", paused: false };
+let lastHandStatusRenderAt = 0;
+let modelWireframe = false;
+let modelVisible = true;
+let objectScanSession = 0;
+let objectScanActive = false;
+let windowStack = 30;
+let currentSpeechResolve = null;
+let currentSpeechAudio = null;
+let currentSpeechUrl = null;
+let browserVoiceCache = [];
+let browserVoicePromise = null;
+let bargeInMonitor = null;
+let bargeInHandling = false;
+let bargeInEnabled = true;
+let startupBriefingStarted = false;
+let openingSequencePromise = Promise.resolve();
+let openingSequenceSkip = null;
+
+const photoModeler = createPhotoReliefModeler({
+  canvas: modelCanvas,
+  onStatus: (_status, detail) => {
+    if (modelStatus) modelStatus.textContent = detail;
+  },
+});
+const objectScanner = createObjectScanner({
+  video: cameraFeed,
+  overlay: objectOverlay,
+  onStatus: (_status, detail) => {
+    if (objectScanActive && cameraStatus) cameraStatus.textContent = detail;
+  },
+});
+const handGestureController = createHandGestureController({
+  onFrame: handleGestureFrame,
+  onSwipe: handleGestureSwipe,
+  onStatus: handleGestureStatus,
+  onActiveChange: (active) => {
+    gestureActive = Boolean(active);
+    updateHandControlUi();
+  },
+});
+const desktopGestureInterpreter = createDesktopGestureInterpreter({
+  sensitivity: gestureSensitivity,
+  onEvent: enqueueNativeHandEvent,
+  onStatus: handleDesktopGestureStatus,
+  onAction: handleDesktopGestureAction,
+  onPauseChange: () => updateHandControlUi(),
+});
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
@@ -187,15 +322,25 @@ particles.visible = false;
 fill.intensity = 0;
 const armillaryCore = createArmillaryCore({ scene, camera, renderer });
 
+window.lucide?.createIcons({ attrs: { "aria-hidden": "true" } });
 setVisualState("idle", { sync: false });
 setDetailsCollapsed(detailsCollapsed);
+selectDrawerTab(activeDrawerTab);
+setupWorkspaceWindows();
+initializeHandControlUi();
+openingSequencePromise = runOpeningSequence();
+animate();
 loadStatus();
 loadProviders();
+warmBrowserVoiceCache();
 setupSpeechRecognition();
-animate();
 
 stateButtons.forEach((button) => {
   button.addEventListener("click", () => setVisualState(button.dataset.state));
+});
+
+drawerTabs.forEach((button) => {
+  button.addEventListener("click", () => selectDrawerTab(button.dataset.drawerTab));
 });
 
 subtitleToggle.addEventListener("click", async () => {
@@ -241,7 +386,7 @@ backendCaptureButton.addEventListener("click", captureBackendVoice);
 
 pushToTalkToggle.addEventListener("click", () => {
   pushToTalk = !pushToTalk;
-  pushToTalkToggle.textContent = pushToTalk ? "Push-to-talk" : "Continuous";
+  setButtonLabel(pushToTalkToggle, pushToTalk ? "Push-to-talk" : "Continuous");
   pushToTalkToggle.setAttribute("aria-pressed", String(pushToTalk));
   micPrivacyDetail.textContent = pushToTalk ? "One command per mic start" : "Continuous listening until stopped";
 });
@@ -256,7 +401,7 @@ alwaysListeningToggle.addEventListener("click", () => {
 
 muteToggle.addEventListener("click", async () => {
   voiceMuted = !voiceMuted;
-  muteToggle.textContent = voiceMuted ? "Muted" : "Mute Off";
+  setButtonLabel(muteToggle, voiceMuted ? "Muted" : "Mute Off");
   muteToggle.setAttribute("aria-pressed", String(voiceMuted));
   await postJson("/api/speak", { muted: voiceMuted, text: "" });
   if (voiceMuted) stopBrowserSpeech();
@@ -298,6 +443,13 @@ window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  updateCoreLayout();
+});
+
+window.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (openingSequenceSkip) openingSequenceSkip();
+  if (handGuideModal && !handGuideModal.hidden) closeHandGuide();
 });
 
 async function sendCommand(options = {}) {
@@ -311,6 +463,7 @@ async function sendCommand(options = {}) {
     const payload = await postJson("/api/command", { command, mode: "do", confirmed });
     const spoken = payload.subtitle || buildTaskSubtitle(payload.task) || payload.message || "Command processed.";
     setSubtitle(spoken);
+    await handleUiDirective(payload.ui_directive);
     renderHistory(payload.conversation_history || []);
     renderRecentTasks(payload.recent_tasks || []);
     if (payload.memory_enabled !== undefined) memoryEnabled = Boolean(payload.memory_enabled);
@@ -328,6 +481,92 @@ async function sendCommand(options = {}) {
     setSubtitle("Local interface could not reach the ULTRON runtime.");
     setVisualState("idle");
   }
+}
+
+function runOpeningSequence() {
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const duration = reducedMotion ? 80 : 3400;
+  const phases = [
+    { threshold: 0, label: "Core handshake" },
+    { threshold: 0.2, label: "Neural lattice assembly" },
+    { threshold: 0.42, label: "Voice and memory links" },
+    { threshold: 0.64, label: "Vision and research links" },
+    { threshold: 0.84, label: "Action runtime verification" },
+  ];
+
+  armillaryCore.startBoot();
+  if (!startupSequence) {
+    armillaryCore.finishBoot();
+    document.body.classList.remove("app-booting");
+    document.body.classList.add("app-ready");
+    return Promise.resolve();
+  }
+
+  startupSequence.hidden = false;
+  startupSequence.classList.remove("is-exiting");
+  startupSequence.setAttribute("aria-hidden", "false");
+
+  return new Promise((resolve) => {
+    let frame = null;
+    let complete = false;
+    const startedAt = performance.now();
+
+    const updateReadout = (progress) => {
+      const percent = Math.min(100, Math.round(progress * 100));
+      startupProgressValue.textContent = String(percent).padStart(2, "0");
+      startupProgressBar.style.transform = `scaleX(${progress.toFixed(4)})`;
+      const phase = [...phases].reverse().find((item) => progress >= item.threshold) || phases[0];
+      startupStatusText.textContent = phase.label;
+      startupModules.forEach((item, index) => {
+        const linkingAt = 0.08 + index * 0.115;
+        const onlineAt = linkingAt + 0.11;
+        const linking = progress >= linkingAt;
+        const online = progress >= onlineAt;
+        item.classList.toggle("is-linking", linking && !online);
+        item.classList.toggle("is-online", online);
+        const status = item.querySelector("[data-startup-module-status]");
+        if (status) status.textContent = online ? "READY" : linking ? "LINK" : "WAIT";
+      });
+    };
+
+    const finish = () => {
+      if (complete) return;
+      complete = true;
+      if (frame) window.cancelAnimationFrame(frame);
+      updateReadout(1);
+      startupStatusText.textContent = "All systems ready";
+      armillaryCore.setBootProgress(1);
+      armillaryCore.finishBoot();
+      document.body.classList.remove("app-booting");
+      document.body.classList.add("app-revealing");
+      startupSequence.classList.add("is-exiting");
+      startupSequence.setAttribute("aria-hidden", "true");
+      const exitDelay = reducedMotion ? 20 : 720;
+      window.setTimeout(() => {
+        startupSequence.hidden = true;
+        document.body.classList.remove("app-revealing");
+        document.body.classList.add("app-ready");
+        openingSequenceSkip = null;
+        resolve();
+      }, exitDelay);
+    };
+
+    const tick = (now) => {
+      const progress = Math.min(1, Math.max(0, (now - startedAt) / duration));
+      const eased = 1 - Math.pow(1 - progress, 3);
+      armillaryCore.setBootProgress(eased);
+      updateReadout(progress);
+      if (progress >= 1) {
+        finish();
+        return;
+      }
+      frame = window.requestAnimationFrame(tick);
+    };
+
+    openingSequenceSkip = finish;
+    updateReadout(0);
+    frame = window.requestAnimationFrame(tick);
+  });
 }
 
 async function loadStatus() {
@@ -349,8 +588,925 @@ async function loadStatus() {
     await loadWakeStatus();
     await loadSkills();
     await loadMemoryKnowledge();
+    await openingSequencePromise;
+    window.setTimeout(loadStartupBriefing, 220);
   } catch {
     setSubtitle("ULTRON visual shell loaded. Runtime API pending.");
+  }
+}
+
+function setupWorkspaceWindows() {
+  [cameraWindow, researchWindow, modelWindow].filter(Boolean).forEach((panel) => {
+    const handle = panel.querySelector("[data-window-drag-handle]");
+    panel.addEventListener("pointerdown", () => bringWindowToFront(panel));
+    handle?.addEventListener("pointerdown", (event) => beginWindowDrag(event, panel));
+    handle?.addEventListener("dblclick", (event) => {
+      if (event.target.closest("button")) return;
+      toggleWindowMaximize(panel);
+    });
+    panel.querySelectorAll("[data-window-action]").forEach((button) => {
+      button.addEventListener("click", () => handleWindowAction(panel, button.dataset.windowAction));
+    });
+  });
+  cameraCaptureButton?.addEventListener("click", captureCameraFrame);
+  gestureToggle?.addEventListener("click", () => setGestureControls(!gestureActive));
+  gestureSystemToggle?.addEventListener("click", () => setGestureControls(!gestureActive));
+  handGuideToggleButton?.addEventListener("click", () => setGestureControls(!gestureActive));
+  gesturePauseButton?.addEventListener("click", () => desktopGestureInterpreter.setPaused(!desktopGestureInterpreter.paused));
+  gestureModeButtons.forEach((button) => {
+    button.addEventListener("click", () => setGestureMode(button.dataset.gestureMode));
+  });
+  handGuideTriggers.forEach((button) => button.addEventListener("click", openHandGuide));
+  handGuideCloseButton?.addEventListener("click", closeHandGuide);
+  handGuideModal?.addEventListener("click", (event) => {
+    if (event.target === handGuideModal) closeHandGuide();
+  });
+  gestureSensitivitySlider?.addEventListener("input", () => {
+    gestureSensitivity = desktopGestureInterpreter.setSensitivity(gestureSensitivitySlider.value);
+    window.localStorage.setItem("ultronGestureSensitivity", String(gestureSensitivity));
+    updateHandControlUi();
+  });
+  modelScanButton?.addEventListener("click", () => buildModelFromCamera("", true));
+  model360Button?.addEventListener("click", () => start360ObjectScan("", 12));
+  modelScaleSlider?.addEventListener("input", () => {
+    const scale = photoModeler.setModelScale(modelScaleSlider.value);
+    modelStatus.textContent = `Model size ${Math.round(scale * 100)}%`;
+  });
+  modelVisibilityButton?.addEventListener("click", () => setModelVisibility(!modelVisible));
+  modelWireframeButton?.addEventListener("click", () => {
+    modelWireframe = !modelWireframe;
+    modelWireframeButton.setAttribute("aria-pressed", String(modelWireframe));
+    photoModeler.setWireframe(modelWireframe);
+  });
+  modelResetButton?.addEventListener("click", resetModelView);
+  modelExportButton?.addEventListener("click", exportCameraModel);
+  objectScanCancelButton?.addEventListener("click", () => cancelObjectScan("360 scan cancelled"));
+  researchForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    runResearch(researchQueryInput.value);
+  });
+  window.addEventListener("beforeunload", () => {
+    cancelObjectScan();
+    objectScanner.dispose();
+    desktopGestureInterpreter.stop();
+    void setNativeHandControl(false);
+    handGestureController.dispose();
+    photoModeler.dispose();
+    stopCameraStream();
+  });
+}
+
+function openWorkspaceWindow(panel) {
+  if (!panel) return;
+  panel.hidden = false;
+  panel.classList.remove("is-minimized");
+  bringWindowToFront(panel);
+}
+
+function bringWindowToFront(panel) {
+  windowStack += 1;
+  panel.style.zIndex = String(windowStack);
+}
+
+function handleWindowAction(panel, action) {
+  if (action === "close") {
+    panel.hidden = true;
+    panel.classList.remove("is-maximized", "is-minimized");
+    if (panel === cameraWindow) {
+      cancelObjectScan("360 scan cancelled");
+      if (gestureActive) setGestureControls(false);
+      stopCameraStream();
+    }
+    return;
+  }
+  if (action === "minimize") {
+    panel.classList.remove("is-maximized");
+    panel.classList.toggle("is-minimized");
+    return;
+  }
+  if (action === "maximize") toggleWindowMaximize(panel);
+}
+
+function toggleWindowMaximize(panel) {
+  panel.classList.remove("is-minimized");
+  panel.classList.toggle("is-maximized");
+  bringWindowToFront(panel);
+}
+
+function beginWindowDrag(event, panel) {
+  if (event.button !== 0 || event.target.closest("button") || panel.classList.contains("is-maximized") || window.innerWidth <= 980) return;
+  const rect = panel.getBoundingClientRect();
+  const offsetX = event.clientX - rect.left;
+  const offsetY = event.clientY - rect.top;
+  bringWindowToFront(panel);
+  event.preventDefault();
+
+  const move = (pointerEvent) => {
+    const maxLeft = Math.max(8, window.innerWidth - panel.offsetWidth - 8);
+    const maxTop = Math.max(8, window.innerHeight - 56);
+    panel.style.left = `${Math.max(8, Math.min(maxLeft, pointerEvent.clientX - offsetX))}px`;
+    panel.style.top = `${Math.max(8, Math.min(maxTop, pointerEvent.clientY - offsetY))}px`;
+    panel.style.right = "auto";
+    panel.style.bottom = "auto";
+  };
+  const end = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", end);
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", end, { once: true });
+}
+
+async function handleUiDirective(directive) {
+  if (!directive || typeof directive !== "object") return;
+  if (directive.kind === "camera") {
+    openCameraWindow(Boolean(directive.auto_capture));
+    return;
+  }
+  if (directive.kind === "research") {
+    renderResearchDirective(directive);
+    return;
+  }
+  if (directive.kind === "gestures") {
+    if (directive.action === "guide") {
+      openHandGuide();
+      return;
+    }
+    if (directive.action === "pause" || directive.action === "resume") {
+      if (gestureMode !== "desktop" || !gestureActive) {
+        setSubtitle("Desktop hand control is not active, sir.");
+        return;
+      }
+      desktopGestureInterpreter.setPaused(directive.action === "pause");
+      return;
+    }
+    if (directive.mode) await setGestureMode(directive.mode, { announce: false });
+    await setGestureControls(directive.action !== "stop");
+    return;
+  }
+  if (directive.kind === "modeler") {
+    const action = String(directive.action || "open");
+    if (action === "generate") {
+      await buildGeneratedModel(directive.description);
+      return;
+    }
+    if (action === "scan_object") {
+      await buildModelFromCamera(directive.target, directive.fallback_360 !== false);
+      return;
+    }
+    if (action === "scan_360") {
+      void start360ObjectScan(directive.target, directive.required_views);
+      return;
+    }
+    if (action === "scale_up" || action === "scale_down") {
+      scaleModel(action === "scale_up" ? 1.25 : 0.8);
+      return;
+    }
+    if (action === "hide" || action === "show") {
+      setModelVisibility(action === "show");
+      return;
+    }
+    if (action === "clear") {
+      photoModeler.clearModel();
+      modelStatus.textContent = "Model cleared";
+      modelStats.textContent = "No mesh";
+      return;
+    }
+    if (action === "reset") {
+      resetModelView();
+      return;
+    }
+    openWorkspaceWindow(modelWindow);
+    window.requestAnimationFrame(() => photoModeler.resize());
+  }
+}
+
+async function openCameraWindow(autoCapture = false) {
+  openWorkspaceWindow(cameraWindow);
+  cameraSnapshot.hidden = true;
+  cameraFeed.hidden = false;
+  cameraPermissionMessage.hidden = false;
+  cameraPermissionMessage.textContent = "Requesting camera access.";
+  cameraStatus.textContent = "Connecting";
+  if (!navigator.mediaDevices?.getUserMedia) {
+    cameraPermissionMessage.textContent = "This browser does not expose camera capture.";
+    cameraStatus.textContent = "Camera unavailable";
+    return false;
+  }
+  try {
+    if (!cameraStream) {
+      cameraStream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
+        audio: false,
+      });
+      cameraFeed.srcObject = cameraStream;
+      await cameraFeed.play();
+    }
+    cameraPermissionMessage.hidden = true;
+    cameraStatus.textContent = "Live camera ready";
+    if (cameraAutoCaptureTimer) window.clearTimeout(cameraAutoCaptureTimer);
+    if (autoCapture) cameraAutoCaptureTimer = window.setTimeout(captureCameraFrame, 1100);
+    return true;
+  } catch (error) {
+    cameraPermissionMessage.hidden = false;
+    cameraPermissionMessage.textContent = "Allow camera access in the browser, then ask ULTRON to open the camera again.";
+    cameraStatus.textContent = error?.name === "NotAllowedError" ? "Permission denied" : "Camera unavailable";
+    return false;
+  }
+}
+
+function stopCameraStream() {
+  if (cameraAutoCaptureTimer) window.clearTimeout(cameraAutoCaptureTimer);
+  cameraAutoCaptureTimer = null;
+  if (cameraStream) cameraStream.getTracks().forEach((track) => track.stop());
+  cameraStream = null;
+  if (cameraFeed) cameraFeed.srcObject = null;
+}
+
+async function captureCameraFrame() {
+  if (!cameraFeed.videoWidth || !cameraFeed.videoHeight) {
+    cameraStatus.textContent = "Camera is not ready yet";
+    return;
+  }
+  cameraCaptureButton.disabled = true;
+  cameraStatus.textContent = "Capturing";
+  const image = cameraFrameDataUrl();
+  if (!image) {
+    cameraCaptureButton.disabled = false;
+    cameraStatus.textContent = "Camera is not ready yet";
+    return;
+  }
+  latestCameraFrame = image;
+  cameraSnapshot.src = image;
+  cameraSnapshot.hidden = false;
+  cameraFeed.hidden = true;
+  try {
+    const payload = await postJson("/api/camera/capture", { image });
+    cameraStatus.textContent = payload.status === "saved" ? `Saved ${payload.filename}` : payload.message || "Capture failed";
+    if (payload.status === "saved") setSubtitle(payload.message);
+  } catch {
+    cameraStatus.textContent = "Could not save the photo";
+  } finally {
+    cameraCaptureButton.disabled = false;
+    window.setTimeout(() => {
+      if (!cameraWindow.hidden && cameraStream) {
+        cameraSnapshot.hidden = true;
+        cameraFeed.hidden = false;
+      }
+    }, 1400);
+  }
+}
+
+function cameraFrameDataUrl() {
+  if (!cameraFeed.videoWidth || !cameraFeed.videoHeight) return "";
+  cameraCanvas.width = cameraFeed.videoWidth;
+  cameraCanvas.height = cameraFeed.videoHeight;
+  const context = cameraCanvas.getContext("2d", { alpha: false });
+  context.save();
+  context.setTransform(1, 0, 0, 1, 0, 0);
+  context.translate(cameraCanvas.width, 0);
+  context.scale(-1, 1);
+  context.drawImage(cameraFeed, 0, 0, cameraCanvas.width, cameraCanvas.height);
+  context.restore();
+  return cameraCanvas.toDataURL("image/png");
+}
+
+function initializeHandControlUi() {
+  if (!['workspace', 'desktop'].includes(gestureMode)) gestureMode = desktopShell ? "desktop" : "workspace";
+  gestureSensitivity = Math.max(0.55, Math.min(1.8, Number.isFinite(gestureSensitivity) ? gestureSensitivity : 1));
+  desktopGestureInterpreter.setSensitivity(gestureSensitivity);
+  if (gestureSensitivitySlider) gestureSensitivitySlider.value = String(gestureSensitivity);
+  if (desktopShell) {
+    window.addEventListener("pywebviewready", initializeDesktopHandBridge);
+    if (window.pywebview?.api) void initializeDesktopHandBridge();
+  }
+  updateHandControlUi();
+}
+
+async function initializeDesktopHandBridge() {
+  if (!desktopShell || !window.pywebview?.api?.hand_control_status) {
+    desktopBridgeReady = false;
+    desktopHandAvailable = false;
+    updateHandControlUi();
+    return false;
+  }
+  try {
+    desktopHandStatus = await window.pywebview.api.hand_control_status();
+    desktopBridgeReady = true;
+    desktopHandAvailable = Boolean(desktopHandStatus?.available);
+  } catch {
+    desktopBridgeReady = false;
+    desktopHandAvailable = false;
+  }
+  updateHandControlUi();
+  return desktopHandAvailable;
+}
+
+async function setGestureMode(mode, options = {}) {
+  const nextMode = mode === "desktop" ? "desktop" : "workspace";
+  if (nextMode === "desktop") {
+    const available = await initializeDesktopHandBridge();
+    if (!available) {
+      setSubtitle(desktopShell ? "Windows-wide hand control is unavailable on this system." : "Desktop hand control is available in the ULTRON desktop app.");
+      return false;
+    }
+  }
+  if (gestureActive) await setGestureControls(false);
+  gestureMode = nextMode;
+  window.localStorage.setItem("ultronGestureMode", gestureMode);
+  handStatusSnapshot = { state: "off", detail: "Press Start when your hand is inside the camera frame", pose: "none", paused: false };
+  updateHandControlUi();
+  if (options.announce !== false) {
+    setSubtitle(gestureMode === "desktop" ? "Desktop hand control selected, sir." : "ULTRON workspace hand control selected, sir.");
+  }
+  return true;
+}
+
+async function setGestureControls(enabled) {
+  if (!enabled) {
+    desktopGestureInterpreter.stop();
+    if (gestureMode === "desktop") await setNativeHandControl(false);
+    nativeHandQueue = [];
+    handGestureController.stop();
+    gestureActive = false;
+    gestureGrab = null;
+    gestureLastPoint = null;
+    gestureCursor.hidden = true;
+    handStatusSnapshot = { state: "off", detail: "Choose a mode, then start hand control", pose: "none", paused: false };
+    updateHandControlUi();
+    return;
+  }
+  gestureToggle.disabled = true;
+  if (gestureSystemToggle) gestureSystemToggle.disabled = true;
+  if (handGuideToggleButton) handGuideToggleButton.disabled = true;
+  const preferredPanel = [modelWindow, researchWindow]
+    .filter((panel) => panel && !panel.hidden)
+    .sort((left, right) => Number(right.style.zIndex || 0) - Number(left.style.zIndex || 0))[0];
+  try {
+    if (gestureMode === "desktop" && !(await initializeDesktopHandBridge())) {
+      throw new Error("Windows-wide hand control is unavailable. Use the packaged ULTRON desktop app.");
+    }
+    const cameraReady = await openCameraWindow(false);
+    if (!cameraReady) throw new Error("Camera access is required for hand controls.");
+    cameraSnapshot.hidden = true;
+    cameraFeed.hidden = false;
+    if (gestureMode === "desktop") {
+      const nativeStatus = await setNativeHandControl(true);
+      if (!nativeStatus?.ok || !nativeStatus?.enabled) throw new Error(nativeStatus?.message || "Windows-wide hand control could not start.");
+    }
+    await handGestureController.start(cameraFeed, gestureOverlay);
+    if (gestureMode === "desktop") cameraWindow.classList.add("is-minimized");
+    gestureActive = true;
+    if (gestureMode === "workspace" && preferredPanel && window.innerWidth <= 980) {
+      cameraWindow.classList.add("is-minimized");
+      bringWindowToFront(preferredPanel);
+    }
+    handStatusSnapshot = {
+      state: "ready",
+      detail: gestureMode === "desktop" ? "Raise only your index finger to move the laptop cursor" : "Pinch a ULTRON window or model to move it",
+      pose: "none",
+      paused: false,
+    };
+    updateHandControlUi();
+    setSubtitle(gestureMode === "desktop" ? "Desktop hand control online, sir. Hold a fist to pause." : "ULTRON hand controls online, sir.");
+  } catch (error) {
+    await setNativeHandControl(false);
+    handGestureController.stop();
+    gestureActive = false;
+    handStatusSnapshot = { state: "error", detail: error?.message || "Hand controls could not start", pose: "none", paused: false };
+    setSubtitle(error?.message || "Hand controls could not start.");
+    cameraStatus.textContent = "Hand tracking unavailable";
+    updateHandControlUi();
+  } finally {
+    gestureToggle.disabled = false;
+    if (gestureSystemToggle) gestureSystemToggle.disabled = false;
+    if (handGuideToggleButton) handGuideToggleButton.disabled = false;
+  }
+}
+
+function handleGestureFrame(signal) {
+  if (gestureMode === "desktop" && gestureActive) {
+    gestureCursor.hidden = true;
+    desktopGestureInterpreter.update(signal || { visible: false });
+    return;
+  }
+  if (!gestureActive || !signal?.visible) {
+    gestureCursor.hidden = true;
+    if (gestureGrab && !signal?.pinching) gestureGrab = null;
+    return;
+  }
+  gestureCursor.hidden = false;
+  gestureCursor.style.transform = `translate3d(${signal.x}px, ${signal.y}px, 0)`;
+  gestureCursor.classList.toggle("is-pinching", Boolean(signal.pinching));
+  gestureToggle.title = signal.pinching ? "Pinch detected" : "Hand controls active";
+
+  if (signal.justPinched) beginGestureGrab(signal.x, signal.y);
+  if (signal.pinching && gestureGrab) updateGestureGrab(signal.x, signal.y);
+  if (signal.justReleased) {
+    gestureGrab = null;
+    gestureLastPoint = null;
+  }
+}
+
+function enqueueNativeHandEvent(event) {
+  if (!event || gestureMode !== "desktop" || !gestureActive || !desktopBridgeReady) return;
+  if (event.type === "move" && nativeHandQueue.at(-1)?.type === "move") nativeHandQueue[nativeHandQueue.length - 1] = event;
+  else nativeHandQueue.push(event);
+  if (nativeHandQueue.length > 18) {
+    const removable = nativeHandQueue.findIndex((item) => item.type === "move");
+    if (removable >= 0) nativeHandQueue.splice(removable, 1);
+  }
+  void pumpNativeHandQueue();
+}
+
+async function pumpNativeHandQueue() {
+  if (nativeHandDispatching || !window.pywebview?.api?.hand_input) return;
+  nativeHandDispatching = true;
+  try {
+    while (nativeHandQueue.length) {
+      const event = nativeHandQueue.shift();
+      const result = await window.pywebview.api.hand_input(event);
+      desktopHandStatus = result;
+      if (result && !result.enabled && result.last_stop_reason === "emergency_hotkey") {
+        nativeHandQueue = [];
+        desktopGestureInterpreter.stop();
+        handGestureController.stop();
+        gestureActive = false;
+        handStatusSnapshot = { state: "off", detail: "Emergency stop received from Ctrl+Alt+H", pose: "none", paused: false };
+        setSubtitle("Desktop hand control stopped safely.");
+        updateHandControlUi();
+        break;
+      }
+    }
+  } catch {
+    nativeHandQueue = [];
+    handStatusSnapshot = { state: "error", detail: "Native cursor bridge stopped responding", pose: "none", paused: false };
+    updateHandControlUi();
+  } finally {
+    nativeHandDispatching = false;
+  }
+}
+
+async function setNativeHandControl(enabled) {
+  if (!desktopShell || !window.pywebview?.api?.set_hand_control) {
+    return { ok: !enabled, available: false, enabled: false, message: "Desktop hand control bridge is unavailable." };
+  }
+  try {
+    desktopHandStatus = await window.pywebview.api.set_hand_control(Boolean(enabled));
+    desktopBridgeReady = true;
+    desktopHandAvailable = Boolean(desktopHandStatus?.available);
+    return desktopHandStatus;
+  } catch {
+    desktopBridgeReady = false;
+    desktopHandAvailable = false;
+    return { ok: false, available: false, enabled: false, message: "Desktop hand control bridge stopped responding." };
+  } finally {
+    updateHandControlUi();
+  }
+}
+
+function handleDesktopGestureStatus(snapshot) {
+  const previousState = handStatusSnapshot.state;
+  const previousPaused = handStatusSnapshot.paused;
+  handStatusSnapshot = snapshot || handStatusSnapshot;
+  const now = performance.now();
+  const shouldRender = previousState !== handStatusSnapshot.state
+    || previousPaused !== handStatusSnapshot.paused
+    || now - lastHandStatusRenderAt >= 90;
+  if (!shouldRender) return;
+  lastHandStatusRenderAt = now;
+  if (gestureMode === "desktop" && gestureActive && cameraStatus) {
+    cameraStatus.textContent = handStatusSnapshot.detail || "Desktop hand control";
+  }
+  updateHandControlUi();
+}
+
+function handleDesktopGestureAction(command) {
+  const labels = {
+    minimize_all: "Showing the desktop.",
+    restore_all: "Restoring your windows.",
+    app_next: "Switching to the next app.",
+    app_previous: "Switching to the previous app.",
+    desktop_left: "Switching to the previous desktop.",
+    desktop_right: "Switching to the next desktop.",
+    task_view: "Opening Task View.",
+    browser_back: "Going back.",
+    browser_forward: "Going forward.",
+  };
+  if (labels[command]) setSubtitle(labels[command]);
+}
+
+function updateHandControlUi() {
+  const paused = gestureMode === "desktop" && desktopGestureInterpreter.paused;
+  const modeName = gestureMode === "desktop" ? "Whole desktop" : "ULTRON workspace";
+  let statusName = gestureActive ? handStatusSnapshot.state.replaceAll("_", " ") : "Off";
+  if (paused) statusName = "Paused";
+  statusName = statusName ? statusName[0].toUpperCase() + statusName.slice(1) : "Off";
+  if (handControlModeLabel) handControlModeLabel.textContent = modeName;
+  if (handControlStatusLabel) handControlStatusLabel.textContent = statusName;
+  if (handControlStatusDetail) handControlStatusDetail.textContent = handStatusSnapshot.detail;
+  gestureModeButtons.forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.gestureMode === gestureMode)));
+  if (desktopGestureModeButton) desktopGestureModeButton.disabled = !desktopShell || (desktopBridgeReady && !desktopHandAvailable);
+  [gestureToggle, gestureSystemToggle, handGuideToggleButton].filter(Boolean).forEach((button) => {
+    button.setAttribute("aria-pressed", String(gestureActive));
+    button.setAttribute("aria-label", gestureActive ? "Disable hand controls" : "Enable hand controls");
+  });
+  if (gestureSystemToggle) setButtonLabel(gestureSystemToggle, gestureActive ? "Stop" : "Start");
+  if (handGuideToggleButton) setButtonLabel(handGuideToggleButton, gestureActive ? "Stop hand control" : "Start hand control");
+  if (gesturePauseButton) {
+    gesturePauseButton.disabled = !gestureActive || gestureMode !== "desktop";
+    gesturePauseButton.setAttribute("aria-pressed", String(paused));
+    setButtonLabel(gesturePauseButton, paused ? "Resume" : "Pause");
+  }
+  if (gestureSensitivityValue) gestureSensitivityValue.textContent = `${Math.round(gestureSensitivity * 100)}%`;
+  document.body.classList.toggle("hand-desktop-live", gestureActive && gestureMode === "desktop" && !paused);
+  document.body.classList.toggle("hand-control-paused", paused);
+  if (handGuideLiveStatus) {
+    handGuideLiveStatus.classList.toggle("is-live", gestureActive && !paused);
+    handGuideLiveStatus.classList.toggle("is-paused", paused);
+  }
+  if (handGuideStatusLabel) handGuideStatusLabel.textContent = gestureActive ? `${modeName}: ${statusName}` : "Hand control is off";
+  if (handGuideStatusDetail) {
+    handGuideStatusDetail.textContent = gestureActive
+      ? handStatusSnapshot.detail
+      : gestureMode === "desktop" && !desktopShell
+        ? "Desktop mode works only inside the ULTRON application"
+        : "Select Desktop mode to control the entire Windows screen";
+  }
+}
+
+function openHandGuide() {
+  if (!handGuideModal) return;
+  handGuideModal.hidden = false;
+  updateHandControlUi();
+  handGuideCloseButton?.focus();
+}
+
+function closeHandGuide() {
+  if (handGuideModal) handGuideModal.hidden = true;
+}
+
+function beginGestureGrab(x, y) {
+  const target = document.elementFromPoint(x, y);
+  if (!target) return;
+  if (target === modelCanvas || target.closest?.("#modelCanvas")) {
+    gestureGrab = { mode: "model" };
+    gestureLastPoint = { x, y };
+    bringWindowToFront(modelWindow);
+    return;
+  }
+  const panel = target.closest?.(".app-window");
+  if (!panel || panel.hidden) return;
+  const rect = panel.getBoundingClientRect();
+  panel.classList.remove("is-maximized", "is-minimized");
+  bringWindowToFront(panel);
+  gestureGrab = { mode: "window", panel, offsetX: x - rect.left, offsetY: y - rect.top };
+}
+
+function updateGestureGrab(x, y) {
+  if (gestureGrab.mode === "model") {
+    if (gestureLastPoint) photoModeler.rotateBy(x - gestureLastPoint.x, y - gestureLastPoint.y);
+    gestureLastPoint = { x, y };
+    return;
+  }
+  const panel = gestureGrab.panel;
+  const maxLeft = Math.max(8, window.innerWidth - panel.offsetWidth - 8);
+  const maxTop = Math.max(8, window.innerHeight - 56);
+  panel.style.left = `${Math.max(8, Math.min(maxLeft, x - gestureGrab.offsetX))}px`;
+  panel.style.top = `${Math.max(8, Math.min(maxTop, y - gestureGrab.offsetY))}px`;
+  panel.style.right = "auto";
+  panel.style.bottom = "auto";
+}
+
+function handleGestureSwipe(direction) {
+  if (gestureMode === "desktop") return;
+  if (detailsCollapsed) setDetailsCollapsed(false);
+  const names = drawerTabs.map((button) => button.dataset.drawerTab);
+  const current = Math.max(0, names.indexOf(activeDrawerTab));
+  const delta = direction === "left" ? 1 : -1;
+  selectDrawerTab(names[(current + delta + names.length) % names.length]);
+}
+
+function handleGestureStatus(status, detail) {
+  if (gestureToggle) gestureToggle.title = detail || "Hand controls";
+  if (status === "loading" || status === "ready" || status === "error") cameraStatus.textContent = detail;
+  if (status === "loading" || status === "error") {
+    handStatusSnapshot = { state: status, detail: detail || "Hand tracking status changed", pose: "none", paused: false };
+    updateHandControlUi();
+  }
+}
+
+async function buildGeneratedModel(description) {
+  const clean = String(description || "").trim();
+  openWorkspaceWindow(modelWindow);
+  bringWindowToFront(modelWindow);
+  modelStatus.textContent = clean ? `Building ${clean}` : "Model description required";
+  modelStats.textContent = "Generating";
+  await new Promise((resolve) => window.requestAnimationFrame(resolve));
+  if (!clean) return;
+  try {
+    const payload = await postJson("/api/model/generate", { description: clean });
+    if (!payload.scene) throw new Error(payload.message || "A valid 3D scene was not generated.");
+    const result = photoModeler.buildFromScene(payload.scene);
+    finishModelBuild(result, `${payload.scene.name || clean} ready`);
+  } catch (error) {
+    modelStatus.textContent = error?.message || "3D generation failed";
+    modelStats.textContent = "No mesh";
+  }
+}
+
+async function buildModelFromCamera(target = "", fallback360 = true) {
+  cancelObjectScan();
+  openWorkspaceWindow(modelWindow);
+  modelStatus.textContent = `Finding ${target || "camera object"}`;
+  modelStats.textContent = "Detecting";
+  const cameraReady = await openCameraWindow(false);
+  if (!cameraReady) {
+    modelStatus.textContent = "Camera unavailable";
+    modelStats.textContent = "No mesh";
+    return;
+  }
+  cameraSnapshot.hidden = true;
+  cameraFeed.hidden = false;
+  try {
+    const capture = await objectScanner.captureFromVideo(String(target || ""));
+    if (!capture || !targetMatchesLabel(target, capture.label)) {
+      const label = target ? ` ${target}` : " object";
+      cameraStatus.textContent = `No${label} isolated`;
+      modelStatus.textContent = `Could not isolate${label}`;
+      modelStats.textContent = "Try clearer lighting";
+      return;
+    }
+    cameraStatus.textContent = `${titleCase(capture.label)} isolated`;
+    if (isRotationalObject(capture.label, target)) {
+      const result = photoModeler.buildFromScan([capture], { name: `${capture.label}-single-view` });
+      finishModelBuild(result, `${titleCase(capture.label)} isolated; rotational model ready`);
+      bringWindowToFront(modelWindow);
+      return;
+    }
+    if (fallback360) {
+      modelStatus.textContent = `${titleCase(capture.label)} needs multiple views`;
+      modelStats.textContent = "Starting 360 scan";
+      void start360ObjectScan(target || capture.label, 12, capture);
+      return;
+    }
+    const result = await photoModeler.buildFromImage(capture.image, { name: `${capture.label}-isolated` });
+    finishModelBuild(result, `${titleCase(capture.label)} isolated-object relief ready`);
+    bringWindowToFront(modelWindow);
+  } catch (error) {
+    modelStatus.textContent = error?.message || "Object reconstruction failed";
+    modelStats.textContent = "No mesh";
+    cameraStatus.textContent = "Object scan unavailable";
+  }
+}
+
+async function start360ObjectScan(target = "", requiredViews = 12, initialCapture = null) {
+  cancelObjectScan();
+  const required = Math.max(6, Math.min(24, Number(requiredViews) || 12));
+  const session = ++objectScanSession;
+  objectScanActive = true;
+  const captures = initialCapture ? [initialCapture] : [];
+  openWorkspaceWindow(modelWindow);
+  modelStatus.textContent = `Scanning ${target || "object"} in 360 degrees`;
+  modelStats.textContent = `${captures.length} / ${required} views`;
+  const cameraReady = await openCameraWindow(false);
+  if (!cameraReady || session !== objectScanSession) {
+    cancelObjectScan("360 scan stopped");
+    return;
+  }
+  cameraSnapshot.hidden = true;
+  cameraFeed.hidden = false;
+  updateObjectScanProgress(captures.length, required, target || initialCapture?.label || "object");
+  objectScanProgress.hidden = false;
+  cameraStatus.textContent = "Rotate the object slowly";
+
+  try {
+    await objectScanner.load();
+    while (session === objectScanSession && captures.length < required) {
+      await wait(720);
+      if (session !== objectScanSession) return;
+      const capture = await objectScanner.captureFromVideo(String(target || ""));
+      if (!capture || !targetMatchesLabel(target, capture.label)) {
+        cameraStatus.textContent = target ? `Keep the ${target} inside the frame` : "Keep the object inside the frame";
+        continue;
+      }
+      if (capture.foregroundRatio < 0.025) {
+        cameraStatus.textContent = "Move the object closer to the camera";
+        continue;
+      }
+      captures.push(capture);
+      updateObjectScanProgress(captures.length, required, target || capture.label);
+      cameraStatus.textContent = captures.length < required ? "Keep rotating the object slowly" : "Fusing captured views";
+      modelStats.textContent = `${captures.length} / ${required} views`;
+    }
+    if (session !== objectScanSession || captures.length < required) return;
+    const result = photoModeler.buildFromScan(captures, { name: `${target || captures[0].label || "object"}-360-scan` });
+    objectScanActive = false;
+    objectScanProgress.hidden = true;
+    finishModelBuild(result, `${titleCase(target || captures[0].label || "Object")} 360 scan ready`);
+    cameraStatus.textContent = `360 scan complete: ${captures.length} views`;
+    bringWindowToFront(modelWindow);
+  } catch (error) {
+    if (session !== objectScanSession) return;
+    objectScanActive = false;
+    objectScanProgress.hidden = true;
+    modelStatus.textContent = error?.message || "360 scan failed";
+    modelStats.textContent = "No mesh";
+    cameraStatus.textContent = "360 scan failed";
+  }
+}
+
+function cancelObjectScan(message = "") {
+  objectScanSession += 1;
+  objectScanActive = false;
+  if (objectScanProgress) objectScanProgress.hidden = true;
+  objectScanner.clearOverlay();
+  if (message && cameraStatus) cameraStatus.textContent = message;
+}
+
+function updateObjectScanProgress(count, required, target) {
+  const percent = Math.min(100, Math.round((count / required) * 100));
+  objectScanLabel.textContent = `${titleCase(target)} 360 scan`;
+  objectScanPercent.textContent = `${percent}%`;
+  objectScanMeter.max = required;
+  objectScanMeter.value = count;
+  objectScanMeter.textContent = `${percent}%`;
+  objectScanViews.textContent = `${count} / ${required} views`;
+}
+
+function finishModelBuild(result, status) {
+  modelStats.textContent = `${result.vertices.toLocaleString()} vertices / ${result.triangles.toLocaleString()} triangles`;
+  setModelVisibility(true);
+  photoModeler.setModelScale(1);
+  if (modelScaleSlider) modelScaleSlider.value = "1";
+  photoModeler.resize();
+  modelStatus.textContent = status;
+}
+
+function scaleModel(factor) {
+  openWorkspaceWindow(modelWindow);
+  const scale = photoModeler.scaleBy(factor);
+  if (modelScaleSlider) modelScaleSlider.value = String(scale);
+  modelStatus.textContent = `Model size ${Math.round(scale * 100)}%`;
+  bringWindowToFront(modelWindow);
+}
+
+function setModelVisibility(visible) {
+  modelVisible = photoModeler.setVisible(visible);
+  if (!modelVisibilityButton) return;
+  modelVisibilityButton.setAttribute("aria-pressed", String(modelVisible));
+  modelVisibilityButton.setAttribute("aria-label", modelVisible ? "Hide 3D model" : "Show 3D model");
+  modelVisibilityButton.title = modelVisible ? "Hide model" : "Show model";
+  modelVisibilityButton.innerHTML = `<i data-lucide="${modelVisible ? "eye" : "eye-off"}" aria-hidden="true"></i>`;
+  window.lucide?.createIcons({ attrs: { "aria-hidden": "true" } });
+  modelStatus.textContent = modelVisible ? "Model visible" : "Model hidden";
+}
+
+function resetModelView() {
+  photoModeler.resetView();
+  modelVisible = true;
+  if (modelScaleSlider) modelScaleSlider.value = "1";
+  setModelVisibility(true);
+  modelStatus.textContent = "3D view reset";
+}
+
+function targetMatchesLabel(target, label) {
+  const expected = String(target || "").toLowerCase().trim();
+  if (!expected || expected === "object") return true;
+  const actual = String(label || "").toLowerCase();
+  const aliases = {
+    can: ["bottle", "cup", "can"],
+    phone: ["cell phone", "phone"],
+    shoe: ["shoe", "sports ball"],
+  };
+  return (aliases[expected] || [expected]).some((candidate) => actual.includes(candidate));
+}
+
+function isRotationalObject(label, target) {
+  return /\b(?:bottle|cup|vase|can|wine glass)\b/.test(`${label || ""} ${target || ""}`.toLowerCase());
+}
+
+function titleCase(value) {
+  const text = String(value || "object").trim();
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : "Object";
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+function exportCameraModel() {
+  try {
+    const result = photoModeler.exportOBJ();
+    modelStatus.textContent = `Exported ${result.filename}`;
+    modelStats.textContent = `${result.vertices.toLocaleString()} vertices / ${result.triangles.toLocaleString()} triangles`;
+  } catch (error) {
+    modelStatus.textContent = error?.message || "Model export failed";
+  }
+}
+
+function renderResearchDirective(directive) {
+  openWorkspaceWindow(researchWindow);
+  const query = String(directive.query || "").trim();
+  const answer = String(directive.answer || "").trim();
+  const results = Array.isArray(directive.results) ? directive.results : [];
+  if (query) researchQueryInput.value = query;
+  researchStatus.textContent = directive.synthesized ? "Synthesized" : directive.status === "success" ? "Sources ready" : directive.status || "Ready";
+  researchSourceCount.textContent = `${results.length} ${results.length === 1 ? "source" : "sources"}`;
+
+  researchSummary.replaceChildren();
+  const heading = document.createElement("h3");
+  heading.textContent = query || "Research console ready";
+  researchSummary.appendChild(heading);
+  const paragraphs = answer ? answer.split(/\n\s*\n/).filter(Boolean) : ["Ask ULTRON to gather information or enter a topic above."];
+  paragraphs.forEach((paragraph) => {
+    const element = document.createElement("p");
+    element.textContent = paragraph;
+    researchSummary.appendChild(element);
+  });
+
+  researchSources.replaceChildren();
+  results.forEach((result) => {
+    const url = safeWebUrl(result.url);
+    if (!url) return;
+    const item = document.createElement("li");
+    const link = document.createElement("a");
+    link.href = url.href;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    const copy = document.createElement("span");
+    const title = document.createElement("strong");
+    const host = document.createElement("small");
+    title.textContent = String(result.title || url.hostname);
+    host.textContent = url.hostname.replace(/^www\./, "");
+    copy.append(title, host);
+    const icon = document.createElement("i");
+    icon.dataset.lucide = "arrow-up-right";
+    icon.setAttribute("aria-hidden", "true");
+    link.append(copy, icon);
+    item.appendChild(link);
+    researchSources.appendChild(item);
+  });
+  window.lucide?.createIcons({ attrs: { "aria-hidden": "true" } });
+  if (!query) window.setTimeout(() => researchQueryInput.focus(), 80);
+}
+
+async function runResearch(rawQuery) {
+  const query = String(rawQuery || "").trim();
+  if (!query) {
+    researchQueryInput.focus();
+    return;
+  }
+  openWorkspaceWindow(researchWindow);
+  researchSubmitButton.disabled = true;
+  researchStatus.textContent = "Researching";
+  researchSourceCount.textContent = "Searching live web";
+  setVisualState("thinking");
+  setSubtitle(`Researching: ${query}`);
+  try {
+    const payload = await postJson("/api/research", { query });
+    await handleUiDirective(payload.ui_directive);
+    renderHistory(payload.conversation_history || []);
+    renderRecentTasks(payload.recent_tasks || []);
+    const response = payload.response || payload.subtitle || payload.message || "Research completed.";
+    setSubtitle(response);
+    setVisualState("speaking");
+    await speakText(response);
+    scheduleListeningReturn({ keepListening: true });
+  } catch {
+    researchStatus.textContent = "Unavailable";
+    researchSourceCount.textContent = "0 sources";
+    setSubtitle("The research service could not reach the ULTRON runtime.");
+    setVisualState("idle");
+  } finally {
+    researchSubmitButton.disabled = false;
+  }
+}
+
+function safeWebUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    return ["http:", "https:"].includes(url.protocol) ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+async function loadStartupBriefing() {
+  if (startupBriefingStarted || window.sessionStorage.getItem("ultronStartupBriefingShown") === "true") return;
+  startupBriefingStarted = true;
+  try {
+    const payload = await fetchJson("/api/briefing");
+    bargeInEnabled = payload.barge_in_enabled !== false;
+    window.sessionStorage.setItem("ultronStartupBriefingShown", "true");
+    if (payload.status === "disabled") return;
+    const message = String(payload.message || "ULTRON 2.7 is online.");
+    setSubtitle(message);
+    setVisualState("speaking");
+    await speakText(message);
+    scheduleListeningReturn();
+  } catch {
+    startupBriefingStarted = false;
   }
 }
 
@@ -442,8 +1598,15 @@ async function startAlwaysListening() {
   const payload = await postJson("/api/wake/start", {});
   applyVoiceStatus(payload.voice);
   applyWakeStatus(payload.wake);
-  setSubtitle(payload.last_subtitle || "Always-listening is on. Say ULTRON or Hey ULTRON.");
+  const doubleClap = payload.wake?.wake_provider === "double_clap";
+  setSubtitle(payload.last_subtitle || (doubleClap ? "Voice standby. Double clap to wake me." : "Always-listening is on. Say ULTRON or Hey ULTRON."));
   setVisualState("waiting_for_wake_word");
+  if (doubleClap && providerStatus?.active?.capture === "sounddevice") {
+    micEnabled = true;
+    voiceBadge.textContent = "Double-clap standby";
+    startBackendWakePolling();
+    return;
+  }
   if (!SpeechRecognition) {
     voiceBadge.textContent = "Wake mock available";
     return;
@@ -454,6 +1617,7 @@ async function startAlwaysListening() {
 
 async function stopAlwaysListening() {
   alwaysListening = false;
+  stopBackendWakePolling();
   const payload = await postJson("/api/wake/stop", {});
   applyVoiceStatus(payload.voice);
   applyWakeStatus(payload.wake);
@@ -514,7 +1678,7 @@ async function startVoiceInput() {
     await stopAlwaysListening();
   }
   micEnabled = true;
-  micToggle.textContent = "Stop Mic";
+  setButtonLabel(micToggle, "Stop Mic");
   micStatusLabel.textContent = "On";
   micPrivacyDetail.textContent = pushToTalk ? "Listening for one command" : "Continuous listening until stopped";
   voiceBadge.textContent = SpeechRecognition ? "Listening" : "Speech API unavailable";
@@ -532,7 +1696,7 @@ async function startVoiceInput() {
 
 async function stopVoiceInput() {
   micEnabled = false;
-  micToggle.textContent = "Start Mic";
+  setButtonLabel(micToggle, "Start Mic");
   micStatusLabel.textContent = "Off";
   micPrivacyDetail.textContent = "Microphone stopped";
   voiceBadge.textContent = "Voice standby";
@@ -618,6 +1782,7 @@ async function handleVoiceTranscript(transcript, options = {}) {
     renderHistory([...(payload.conversation_history || []), ...(payload.history || [])]);
     const response = payload.spoken_response || payload.subtitle || payload.message || "Voice command processed.";
     setSubtitle(formatAssistantSubtitle(payload, response));
+    await handleUiDirective(payload.ui_directive);
     confirmVoiceButton.hidden = !payload.needs_confirmation;
     if (payload.needs_confirmation || taskNeedsConfirmation(payload.task)) {
       showConfirmation(payload.task, { command: payload.voice?.pending_confirmation_goal || transcript, source: "voice" });
@@ -630,14 +1795,16 @@ async function handleVoiceTranscript(transcript, options = {}) {
     }
     setVisualState(payload.needs_confirmation ? "listening" : "speaking");
     await speakText(response);
-    scheduleListeningReturn();
+    scheduleListeningReturn({ keepListening: shouldContinueConversation(payload) });
   } catch {
     setSubtitle("Voice mode could not reach the ULTRON runtime.");
     setVisualState("idle");
   }
 }
 
-async function captureBackendVoice() {
+async function captureBackendVoice(options = {}) {
+  const fromBargeIn = Boolean(options.fromBargeIn);
+  if (fromBargeIn) pauseBackendWakePolling();
   setSubtitle("Listening.");
   setVisualState("listening");
   voiceBadge.textContent = "Backend capture";
@@ -655,18 +1822,25 @@ async function captureBackendVoice() {
     const response = payload.spoken_response || payload.subtitle || payload.message || "Voice command processed.";
     const understood = payload.record?.ultron_understood || payload.transcript?.text || "";
     setSubtitle(formatAssistantSubtitle(payload, response));
+    await handleUiDirective(payload.ui_directive);
     if (payload.needs_confirmation || taskNeedsConfirmation(payload.task)) {
       showConfirmation(payload.task, { command: payload.voice?.pending_confirmation_goal || understood, source: "voice" });
       setVisualState("listening");
       return;
     }
     clearPendingConfirmation();
+    if (fromBargeIn) bargeInHandling = false;
     setVisualState(payload.status === "empty" ? "listening" : "speaking");
     await speakText(response);
-    scheduleListeningReturn();
+    scheduleListeningReturn({ keepListening: shouldContinueConversation(payload) });
   } catch {
     setSubtitle("Backend microphone capture could not reach the ULTRON runtime.");
     setVisualState(micEnabled ? "listening" : "idle");
+  } finally {
+    if (fromBargeIn) {
+      bargeInHandling = false;
+      if (alwaysListening && wakeProvider === "double_clap") startBackendWakePolling();
+    }
   }
 }
 
@@ -686,12 +1860,15 @@ async function handleWakeTranscript(transcript) {
       return;
     }
     if (payload.status === "wake_detected") {
-      setSubtitle(payload.message || "Wake word detected. Listening.");
+      const greeting = payload.spoken_response || payload.subtitle || "At your service, sir.";
+      setSubtitle(greeting);
       setVisualState("listening");
+      await speakText(greeting);
       return;
     }
     const response = payload.spoken_response || payload.subtitle || payload.message || "Voice command processed.";
     setSubtitle(formatAssistantSubtitle(payload, response));
+    await handleUiDirective(payload.ui_directive);
     confirmVoiceButton.hidden = !payload.needs_confirmation;
     if (payload.needs_confirmation || taskNeedsConfirmation(payload.task)) {
       showConfirmation(payload.task, { command: payload.voice?.pending_confirmation_goal || transcript, source: "voice" });
@@ -700,7 +1877,7 @@ async function handleWakeTranscript(transcript) {
     }
     setVisualState(payload.needs_confirmation ? "listening" : "speaking");
     await speakText(response);
-    scheduleListeningReturn();
+    scheduleListeningReturn({ keepListening: shouldContinueConversation(payload) });
   } catch {
     setSubtitle("Wake mode could not reach the ULTRON runtime.");
     setVisualState("waiting_for_wake_word");
@@ -717,7 +1894,16 @@ async function speakText(text) {
   }
   if (voiceMuted || !text.trim()) return;
   if (payload.speech?.provider && payload.speech.provider !== "browser_speech_synthesis") {
-    voiceBadge.textContent = payload.speech.status === "audio_file" ? "Local TTS ready" : "Local TTS checked";
+    const neuralAudioReady =
+      (payload.speech.status === "audio_stream" && payload.speech.stream_url) ||
+      (payload.speech.status === "audio_data" && payload.speech.audio_base64);
+    if (neuralAudioReady) {
+      voiceBadge.textContent = "Neural voice ready";
+      const status = await playNeuralSpeech(text, payload.speech);
+      if (status !== "error") return;
+    }
+    voiceBadge.textContent = "Using offline voice";
+    await playBrowserSpeech(text);
     return;
   }
   await playBrowserSpeech(text);
@@ -728,52 +1914,425 @@ async function playBrowserSpeech(text) {
     voiceBadge.textContent = "Speech output unavailable";
     return;
   }
+  const resumeWakePolling = backendWakePolling && alwaysListening && !backendCommandCaptureActive;
+  if (resumeWakePolling) pauseBackendWakePolling();
   stopBrowserSpeech();
   const utterance = new SpeechSynthesisUtterance(text);
-  utterance.rate = providerStatus?.speech_settings?.rate || 0.94;
-  utterance.pitch = providerStatus?.speech_settings?.pitch || 0.86;
-  utterance.volume = providerStatus?.speech_settings?.volume || 0.95;
+  utterance.rate = providerStatus?.speech_settings?.rate || 1.08;
+  utterance.pitch = providerStatus?.speech_settings?.pitch || 1.0;
+  utterance.volume = providerStatus?.speech_settings?.volume || 1.0;
   const voices = await getBrowserVoices();
-  const preferred =
-    voices.find((voice) => /natural|online|neural|aria|guy|jenny/i.test(voice.name) && voice.lang?.startsWith("en")) ||
-    voices.find((voice) => /david|mark|zira|english/i.test(voice.name) && voice.lang?.startsWith("en")) ||
-    voices.find((voice) => voice.lang?.startsWith("en"));
-  if (preferred) utterance.voice = preferred;
+  const preferred = selectBrowserVoice(voices, providerStatus?.speech_settings?.voice_preference);
+  utterance.lang = preferred?.lang || "en-GB";
+  if (preferred) {
+    utterance.voice = preferred;
+    ttsProviderDetail.textContent = preferred.name;
+  }
   utterance.onstart = () => {
     armillaryCore.setSpeechText(text);
     voiceBadge.textContent = "Speaking";
     setVisualState("speaking");
+    startBargeInMonitor();
   };
-  utterance.onend = () => {
-    armillaryCore.setSpeechText("");
-    voiceBadge.textContent = micEnabled ? "Listening" : "Voice standby";
-    setVisualState(micEnabled ? "listening" : "idle");
-  };
-  window.speechSynthesis.speak(utterance);
+  return await new Promise((resolve) => {
+    let finished = false;
+    const finish = (status) => {
+      if (finished) return;
+      finished = true;
+      stopBargeInMonitor();
+      if (currentSpeechResolve === finish) currentSpeechResolve = null;
+      armillaryCore.setSpeechText("");
+      if (!bargeInHandling) {
+        voiceBadge.textContent = micEnabled ? "Listening" : "Voice standby";
+        setVisualState(micEnabled ? "listening" : "idle");
+        if (resumeWakePolling && alwaysListening) startBackendWakePolling();
+      }
+      resolve(status);
+    };
+    currentSpeechResolve = finish;
+    utterance.onend = () => finish("ended");
+    utterance.onerror = () => finish("error");
+    window.speechSynthesis.speak(utterance);
+  });
+}
+
+async function playNeuralSpeech(text, speech) {
+  const resumeWakePolling = backendWakePolling && alwaysListening && !backendCommandCaptureActive;
+  if (resumeWakePolling) pauseBackendWakePolling();
+  stopBrowserSpeech();
+  let objectUrl = null;
+  let source = String(speech.stream_url || "");
+  if (!source) {
+    try {
+      const binary = window.atob(String(speech.audio_base64 || ""));
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+      objectUrl = URL.createObjectURL(new Blob([bytes], { type: speech.mime_type || "audio/mpeg" }));
+      source = objectUrl;
+    } catch {
+      if (resumeWakePolling && alwaysListening) startBackendWakePolling();
+      return "error";
+    }
+  }
+  if (!source.startsWith("/api/voice/audio/") && !objectUrl) {
+    if (resumeWakePolling && alwaysListening) startBackendWakePolling();
+    return "error";
+  }
+  const audio = new Audio(source);
+  audio.preload = "auto";
+  audio.volume = Math.max(0, Math.min(1, Number(providerStatus?.speech_settings?.volume ?? 1)));
+  currentSpeechAudio = audio;
+  currentSpeechUrl = objectUrl;
+  return await new Promise((resolve) => {
+    let finished = false;
+    const finish = (status) => {
+      if (finished) return;
+      finished = true;
+      stopBargeInMonitor();
+      if (currentSpeechResolve === finish) currentSpeechResolve = null;
+      if (currentSpeechAudio === audio) currentSpeechAudio = null;
+      if (objectUrl && currentSpeechUrl === objectUrl) currentSpeechUrl = null;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      armillaryCore.setSpeechText("");
+      if (!bargeInHandling) {
+        voiceBadge.textContent = micEnabled ? "Listening" : "Voice standby";
+        setVisualState(micEnabled ? "listening" : "idle");
+        if (resumeWakePolling && alwaysListening) startBackendWakePolling();
+      }
+      resolve(status);
+    };
+    currentSpeechResolve = finish;
+    audio.onplay = () => {
+      armillaryCore.setSpeechText(text);
+      voiceBadge.textContent = `Speaking via ${speech.model || "Aura-2"}`;
+      setVisualState("speaking");
+      startBargeInMonitor();
+    };
+    audio.onended = () => finish("ended");
+    audio.onerror = () => finish("error");
+    audio.play().catch(() => finish("error"));
+  });
+}
+
+function startBackendWakePolling() {
+  if (backendWakePolling || backendCommandCaptureActive) return;
+  backendWakePolling = true;
+  runBackendWakePoll();
+}
+
+function pauseBackendWakePolling() {
+  backendWakePolling = false;
+  if (backendWakeTimer) {
+    window.clearTimeout(backendWakeTimer);
+    backendWakeTimer = null;
+  }
+}
+
+function stopBackendWakePolling() {
+  pauseBackendWakePolling();
+  backendWakeBusy = false;
+  backendCommandCaptureActive = false;
+}
+
+function syncBackendWakePolling() {
+  const shouldPoll = alwaysListening && !backendCommandCaptureActive && wakeProvider === "double_clap" && providerStatus?.active?.capture === "sounddevice";
+  if (shouldPoll) {
+    startBackendWakePolling();
+  } else if (!alwaysListening) {
+    stopBackendWakePolling();
+  }
+}
+
+async function runBackendWakePoll() {
+  if (!backendWakePolling || !alwaysListening || backendWakeBusy) return;
+  backendWakeBusy = true;
+  try {
+    const payload = await postJson("/api/wake/process", { capture: true, seconds: 0.55, energy_only: true });
+    applyVoiceStatus(payload.voice);
+    applyWakeStatus(payload.wake);
+    applyVoiceDiagnostics(payload.voice_diagnostics);
+    renderHistory([...(payload.conversation_history || []), ...(payload.history || [])]);
+    if (payload.status === "wake_detected") {
+      const greeting = payload.spoken_response || payload.subtitle || "At your service, sir.";
+      setSubtitle(greeting);
+      setVisualState("listening");
+      backendCommandCaptureActive = true;
+      pauseBackendWakePolling();
+      try {
+        const commandCapture = captureBackendWakeCommand();
+        await Promise.all([commandCapture, speakText(greeting)]);
+      } finally {
+        backendCommandCaptureActive = false;
+        if (alwaysListening) backendWakePolling = true;
+      }
+    } else if (payload.command_executed) {
+      const response = payload.spoken_response || payload.subtitle || payload.message || "Voice command processed.";
+      setSubtitle(formatAssistantSubtitle(payload, response));
+      await handleUiDirective(payload.ui_directive);
+      if (payload.needs_confirmation || taskNeedsConfirmation(payload.task)) {
+        showConfirmation(payload.task, { command: payload.voice?.pending_confirmation_goal || "", source: "voice" });
+      } else {
+        clearPendingConfirmation();
+      }
+      stopBackendWakePolling();
+      await speakText(response);
+      if (alwaysListening) startBackendWakePolling();
+      scheduleListeningReturn({ keepListening: shouldContinueConversation(payload) });
+    } else if (payload.status === "capture_unavailable") {
+      setSubtitle(payload.message || "Backend microphone capture is unavailable.");
+      stopBackendWakePolling();
+    }
+  } catch {
+    setSubtitle("Double-clap wake polling could not reach the ULTRON runtime.");
+  } finally {
+    backendWakeBusy = false;
+    if (backendWakePolling && alwaysListening) {
+      backendWakeTimer = window.setTimeout(runBackendWakePoll, 90);
+    }
+  }
+}
+
+async function captureBackendWakeCommand(followUpDepth = 0) {
+  if (!alwaysListening) return;
+  const configuredSeconds = Number(providerStatus?.speech_settings?.capture_seconds || 6);
+  const seconds = Math.max(2, Math.min(12, configuredSeconds));
+  setSubtitle(followUpDepth ? "Listening for your response, sir." : "Listening. Speak your command, sir.");
+  setVisualState("listening");
+  voiceBadge.textContent = "Listening for command";
+
+  const payload = await postJson("/api/wake/process", {
+    capture: true,
+    command_capture: true,
+    seconds,
+  });
+  applyVoiceStatus(payload.voice);
+  applyWakeStatus(payload.wake);
+  applyVoiceDiagnostics(payload.voice_diagnostics);
+  renderHistory([...(payload.conversation_history || []), ...(payload.history || [])]);
+
+  if (payload.status === "capture_unavailable") {
+    setSubtitle(payload.message || "Backend microphone capture is unavailable.");
+    return;
+  }
+  if (payload.status === "no_command" || payload.status === "empty" || payload.status === "ignored") {
+    setSubtitle(payload.message || "I did not hear a command. Double clap when you are ready, sir.");
+    setVisualState("waiting_for_wake_word");
+    return;
+  }
+  if (!payload.command_executed) {
+    setSubtitle(payload.message || "I could not process that command. Double clap and try again, sir.");
+    setVisualState("waiting_for_wake_word");
+    return;
+  }
+
+  const response = payload.spoken_response || payload.subtitle || payload.message || "Voice command processed.";
+  setSubtitle(formatAssistantSubtitle(payload, response));
+  await handleUiDirective(payload.ui_directive);
+  const needsConfirmation = payload.needs_confirmation || taskNeedsConfirmation(payload.task);
+  if (needsConfirmation) {
+    showConfirmation(payload.task, { command: payload.voice?.pending_confirmation_goal || "", source: "voice" });
+  } else {
+    clearPendingConfirmation();
+  }
+  setVisualState(needsConfirmation ? "listening" : "speaking");
+  await speakText(response);
+
+  if (!needsConfirmation && shouldContinueConversation(payload) && followUpDepth < 5 && alwaysListening) {
+    await captureBackendWakeCommand(followUpDepth + 1);
+    return;
+  }
+  setVisualState(alwaysListening ? "waiting_for_wake_word" : "idle");
 }
 
 async function getBrowserVoices() {
+  if (browserVoiceCache.length) return browserVoiceCache;
   const immediate = window.speechSynthesis.getVoices();
-  if (immediate.length) return immediate;
-  return await new Promise((resolve) => {
-    const timeout = window.setTimeout(() => resolve(window.speechSynthesis.getVoices()), 700);
-    window.speechSynthesis.onvoiceschanged = () => {
-      window.clearTimeout(timeout);
-      resolve(window.speechSynthesis.getVoices());
+  if (immediate.length) {
+    browserVoiceCache = immediate;
+    return browserVoiceCache;
+  }
+  if (browserVoicePromise) return await browserVoicePromise;
+  browserVoicePromise = new Promise((resolve) => {
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      const voices = window.speechSynthesis.getVoices();
+      if (voices.length) browserVoiceCache = voices;
+      resolve(browserVoiceCache);
     };
+    const timeout = window.setTimeout(finish, 250);
+    window.speechSynthesis.addEventListener(
+      "voiceschanged",
+      () => {
+        window.clearTimeout(timeout);
+        finish();
+      },
+      { once: true }
+    );
   });
+  const voices = await browserVoicePromise;
+  browserVoicePromise = null;
+  return voices;
+}
+
+function warmBrowserVoiceCache() {
+  if (!window.speechSynthesis) return;
+  getBrowserVoices().catch(() => {});
+}
+
+function selectBrowserVoice(voices, preference = "") {
+  if (!voices.length) return null;
+  const english = voices.filter((voice) => String(voice.lang || "").toLowerCase().startsWith("en"));
+  const candidates = english.length ? english : voices;
+  const requested = String(preference || "").trim().toLowerCase();
+  if (requested) {
+    const configured = candidates.find((voice) => String(voice.name || "").toLowerCase().includes(requested));
+    if (configured) return configured;
+  }
+  const score = (voice) => {
+    const name = String(voice.name || "").toLowerCase();
+    const lang = String(voice.lang || "").toLowerCase();
+    let value = voice.localService ? 30 : 0;
+    if (lang === "en-gb") value += 15;
+    if (/george/.test(name)) value += 120;
+    else if (/mark/.test(name)) value += 100;
+    else if (/ravi/.test(name)) value += 90;
+    else if (/andrew|ryan|guy/.test(name)) value += 75;
+    else if (/aria|jenny|zira|hazel/.test(name)) value += 55;
+    if (/natural|neural/.test(name)) value += 35;
+    if (/online/.test(name)) value -= 20;
+    if (/david/.test(name)) value -= 45;
+    if (/desktop/.test(name)) value -= 10;
+    return value;
+  };
+  return [...candidates].sort((left, right) => score(right) - score(left))[0] || null;
+}
+
+async function startBargeInMonitor() {
+  if (!bargeInEnabled || bargeInHandling || voiceMuted || !navigator.mediaDevices?.getUserMedia || !window.AudioContext) return;
+  stopBargeInMonitor();
+  const monitor = { cancelled: false, stream: null, context: null, animation: null };
+  bargeInMonitor = monitor;
+  try {
+    monitor.stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+      video: false,
+    });
+    if (monitor.cancelled || bargeInMonitor !== monitor) {
+      monitor.stream.getTracks().forEach((track) => track.stop());
+      return;
+    }
+    monitor.context = new AudioContext();
+    const source = monitor.context.createMediaStreamSource(monitor.stream);
+    const analyser = monitor.context.createAnalyser();
+    analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.18;
+    source.connect(analyser);
+    const samples = new Uint8Array(analyser.fftSize);
+    const startedAt = performance.now();
+    let baseline = 0.008;
+    let aboveSince = 0;
+
+    const inspect = () => {
+      if (monitor.cancelled || bargeInMonitor !== monitor || !speechPlaybackActive()) return;
+      analyser.getByteTimeDomainData(samples);
+      let energy = 0;
+      for (const sample of samples) {
+        const centered = (sample - 128) / 128;
+        energy += centered * centered;
+      }
+      const rms = Math.sqrt(energy / samples.length);
+      const elapsed = performance.now() - startedAt;
+      if (elapsed < 650) {
+        baseline = Math.max(0.006, baseline * 0.88 + rms * 0.12);
+      } else {
+        const threshold = Math.max(0.026, baseline * 2.45);
+        if (rms >= threshold) {
+          aboveSince = aboveSince || performance.now();
+          if (performance.now() - aboveSince >= 150) {
+            handleSpeechBargeIn();
+            return;
+          }
+        } else {
+          aboveSince = 0;
+          baseline = Math.max(0.006, baseline * 0.995 + rms * 0.005);
+        }
+      }
+      monitor.animation = window.requestAnimationFrame(inspect);
+    };
+    monitor.animation = window.requestAnimationFrame(inspect);
+  } catch {
+    stopBargeInMonitor();
+  }
+}
+
+function stopBargeInMonitor() {
+  const monitor = bargeInMonitor;
+  bargeInMonitor = null;
+  if (!monitor) return;
+  monitor.cancelled = true;
+  if (monitor.animation) window.cancelAnimationFrame(monitor.animation);
+  if (monitor.stream) monitor.stream.getTracks().forEach((track) => track.stop());
+  if (monitor.context && monitor.context.state !== "closed") monitor.context.close().catch(() => {});
+}
+
+async function handleSpeechBargeIn() {
+  if (bargeInHandling) return;
+  bargeInHandling = true;
+  stopBrowserSpeech();
+  postJson("/api/speak", { action: "stop" }).catch(() => {});
+  setSubtitle("I stopped. Listening, sir.");
+  setVisualState("listening");
+  voiceBadge.textContent = "Interruption detected";
+  if (providerStatus?.active?.capture === "sounddevice") {
+    await captureBackendVoice({ fromBargeIn: true });
+    return;
+  }
+  bargeInHandling = false;
+  if (!recognitionActive) await startVoiceInput();
 }
 
 function stopBrowserSpeech() {
   armillaryCore.setSpeechText("");
-  if (window.speechSynthesis) {
+  stopBargeInMonitor();
+  if (currentSpeechAudio) {
+    currentSpeechAudio.pause();
+    currentSpeechAudio.removeAttribute("src");
+    currentSpeechAudio.load();
+    currentSpeechAudio = null;
+  }
+  if (currentSpeechUrl) {
+    URL.revokeObjectURL(currentSpeechUrl);
+    currentSpeechUrl = null;
+  }
+  if (window.speechSynthesis?.speaking || window.speechSynthesis?.pending) {
     window.speechSynthesis.cancel();
+  }
+  if (currentSpeechResolve) {
+    const resolve = currentSpeechResolve;
+    currentSpeechResolve = null;
+    resolve("cancelled");
   }
 }
 
-function scheduleListeningReturn() {
+function speechPlaybackActive() {
+  const neuralPlaying = currentSpeechAudio && !currentSpeechAudio.paused && !currentSpeechAudio.ended;
+  return Boolean(neuralPlaying || window.speechSynthesis?.speaking);
+}
+
+function scheduleListeningReturn(options = {}) {
+  if (bargeInHandling) return;
   window.clearTimeout(returnTimer);
-  returnTimer = window.setTimeout(() => setVisualState(alwaysListening ? "waiting_for_wake_word" : micEnabled ? "listening" : "idle"), 3200);
+  const keepListening = Boolean(options.keepListening);
+  returnTimer = window.setTimeout(() => {
+    if (keepListening) {
+      setVisualState("listening");
+      voiceBadge.textContent = "Listening";
+      return;
+    }
+    setVisualState(alwaysListening ? "waiting_for_wake_word" : micEnabled ? "listening" : "idle");
+  }, keepListening ? 450 : 3200);
 }
 
 function setVisualState(state, options = {}) {
@@ -805,10 +2364,42 @@ function setVisualState(state, options = {}) {
 function setDetailsCollapsed(collapsed) {
   detailsCollapsed = Boolean(collapsed);
   document.body.classList.toggle("details-collapsed", detailsCollapsed);
-  armillaryCore.setLayoutMode(detailsCollapsed ? "compact" : "full");
+  updateCoreLayout();
   detailToggle.setAttribute("aria-pressed", String(detailsCollapsed));
-  detailToggle.setAttribute("aria-label", detailsCollapsed ? "Show detailed panels" : "Hide detailed panels");
+  detailToggle.setAttribute("aria-label", detailsCollapsed ? "Show operations drawer" : "Hide operations drawer");
+  detailToggle.title = detailsCollapsed ? "Show operations drawer" : "Hide operations drawer";
   window.localStorage.setItem("ultronDetailsCollapsed", String(detailsCollapsed));
+}
+
+function updateCoreLayout() {
+  const compact = detailsCollapsed || window.innerWidth <= 980;
+  armillaryCore.setLayoutMode(compact ? "compact" : "full");
+}
+
+function selectDrawerTab(tab) {
+  const available = drawerTabs.some((button) => button.dataset.drawerTab === tab);
+  activeDrawerTab = available ? tab : "activity";
+  drawerTabs.forEach((button) => {
+    const active = button.dataset.drawerTab === activeDrawerTab;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-selected", String(active));
+    button.tabIndex = active ? 0 : -1;
+  });
+  drawerPanels.forEach((panel) => {
+    const active = panel.dataset.drawerPanel === activeDrawerTab;
+    panel.classList.toggle("is-active", active);
+    panel.hidden = panel.dataset.drawerPanel === "activity" ? false : !active;
+  });
+  window.localStorage.setItem("ultronDrawerTab", activeDrawerTab);
+}
+
+function setButtonLabel(button, text) {
+  const label = button?.querySelector("[data-button-label]");
+  if (label) {
+    label.textContent = text;
+  } else if (button) {
+    button.textContent = text;
+  }
 }
 
 function setSubtitle(text) {
@@ -817,7 +2408,7 @@ function setSubtitle(text) {
 
 function updateSubtitles() {
   subtitlePanel.classList.toggle("is-hidden", !subtitlesEnabled);
-  subtitleToggle.textContent = subtitlesEnabled ? "On" : "Off";
+  setButtonLabel(subtitleToggle, subtitlesEnabled ? "On" : "Off");
   subtitleToggle.setAttribute("aria-pressed", String(subtitlesEnabled));
 }
 
@@ -826,7 +2417,7 @@ function applyVoiceStatus(status) {
   micEnabled = Boolean(status.microphone_enabled);
   voiceMuted = Boolean(status.muted);
   pushToTalk = Boolean(status.push_to_talk);
-  micToggle.textContent = micEnabled ? "Stop Mic" : "Start Mic";
+  setButtonLabel(micToggle, micEnabled ? "Stop Mic" : "Start Mic");
   micStatusLabel.textContent = micEnabled ? "On" : "Off";
   micPrivacyDetail.textContent = alwaysListening
     ? "Always-listening enabled"
@@ -837,15 +2428,15 @@ function applyVoiceStatus(status) {
       : SpeechRecognition
         ? "Microphone stopped"
         : "Speech recognition unavailable";
-  muteToggle.textContent = voiceMuted ? "Muted" : "Mute Off";
+  setButtonLabel(muteToggle, voiceMuted ? "Muted" : "Mute Off");
   muteToggle.setAttribute("aria-pressed", String(voiceMuted));
-  pushToTalkToggle.textContent = pushToTalk ? "Push-to-talk" : "Continuous";
+  setButtonLabel(pushToTalkToggle, pushToTalk ? "Push-to-talk" : "Continuous");
   pushToTalkToggle.setAttribute("aria-pressed", String(pushToTalk));
   confirmVoiceButton.hidden = !status.pending_confirmation_goal;
   voiceBadge.textContent = status.listening
     ? SpeechRecognition ? "Listening" : "Speech API unavailable"
     : status.speaking
-      ? `Speaking via ${status.tts_provider || "voice"}`
+      ? `Speaking via ${displayProviderName(status.tts_provider)}`
       : "Voice standby";
   if (!providerStatus) {
     sttProviderLabel.textContent = status.stt_provider || "text_payload";
@@ -875,7 +2466,8 @@ function applyVoiceDiagnostics(diagnostics) {
 function applyWakeStatus(wake) {
   if (!wake) return;
   alwaysListening = Boolean(wake.always_listening);
-  alwaysListeningToggle.textContent = alwaysListening ? "Always On" : "Always Off";
+  wakeProvider = wake.wake_provider || wakeProvider;
+  setButtonLabel(alwaysListeningToggle, alwaysListening ? "Always On" : "Always Off");
   alwaysListeningToggle.setAttribute("aria-pressed", String(alwaysListening));
   micStatusLabel.textContent = alwaysListening || micEnabled ? "On" : "Off";
   micPrivacyDetail.textContent = alwaysListening ? "Always-listening enabled" : "Push-to-talk available";
@@ -894,6 +2486,7 @@ function applyWakeStatus(wake) {
   if (alwaysListening && (visualState === "idle" || visualState === "inactive")) {
     setVisualState(wake.mode || "waiting_for_wake_word", { sync: false });
   }
+  syncBackendWakePolling();
 }
 
 function applyProviders(payload) {
@@ -918,6 +2511,7 @@ function applyProviders(payload) {
   captureProviderDetail.textContent = providerDetail(configuredCapture, activeCapture, captureHealth);
   applyVoiceDiagnostics(payload.voice_diagnostics);
   refreshCoreMicButton();
+  syncBackendWakePolling();
 }
 
 function refreshCoreMicButton() {
@@ -938,7 +2532,7 @@ function providerDetail(configured, active, health) {
 
 function displayState(state) {
   if (state === "inactive") return "Shutdown";
-  if (state === "waiting_for_wake_word") return "Wake";
+  if (state === "waiting_for_wake_word") return "Standby";
   return String(state || "idle")
     .replace(/_/g, " ")
     .replace(/\b\w/g, (char) => char.toUpperCase());
@@ -986,7 +2580,7 @@ function renderSkills(skills) {
 function renderKnowledgePanel({ memory = [], sources = [], matches = [], error = "", memoryEnabled: enabled = memoryEnabled }) {
   knowledgeList.innerHTML = "";
   memoryEnabled = Boolean(enabled);
-  memoryToggle.textContent = memoryEnabled ? "Memory On" : "Memory Off";
+  setButtonLabel(memoryToggle, memoryEnabled ? "Memory On" : "Memory Off");
   memoryToggle.setAttribute("aria-pressed", String(memoryEnabled));
   if (error) {
     appendListItem(knowledgeList, error);
@@ -1047,6 +2641,25 @@ function taskNeedsConfirmation(task) {
   if (!task) return false;
   if (task.status === "waiting_for_confirmation") return true;
   return Boolean((task.steps || []).some((step) => step.status === "waiting_for_confirmation"));
+}
+
+function displayProviderName(provider) {
+  const names = {
+    browser_speech_synthesis: "browser voice",
+    deepgram: "Deepgram",
+    sounddevice: "system microphone",
+    pyttsx3: "Windows voice",
+    piper: "Piper",
+  };
+  return names[provider] || String(provider || "voice").replace(/_/g, " ");
+}
+
+function shouldContinueConversation(payload) {
+  if (!payload) return false;
+  if (payload.continue_listening) return true;
+  if (payload.route === "chat") return true;
+  const task = payload.task;
+  return Boolean((task?.steps || []).some((step) => step?.tool_call?.name === "assistant_reply"));
 }
 
 function showConfirmation(task, context) {

@@ -190,7 +190,7 @@ class UltronBrain:
         note_plan = self._decompose_note_goal(normalized)
         if note_plan:
             return note_plan
-        parts = re.split(r"\s+(?:and then|then)\s+|[.;]\s*", normalized, flags=re.IGNORECASE)
+        parts = re.split(r"\s+(?:and then|then)\s+|;\s*|(?<=[.!?])\s+", normalized, flags=re.IGNORECASE)
         steps = [part.strip() for part in parts if part.strip()]
         if len(steps) > 1:
             return steps
@@ -342,6 +342,8 @@ def _friendly_step_result(step: TaskStep) -> str:
     status = str(result.get("status") or "")
     if tool == "open_application":
         return _would(status, f"opened {arguments.get('app', 'the application')}", message)
+    if tool == "write_text_in_application":
+        return _would(status, f"opened {arguments.get('app', 'the application')} and wrote the text", message)
     if tool == "assistant_reply":
         return message or str(arguments.get("message") or "At your service.")
     if tool == "ask_clarification":

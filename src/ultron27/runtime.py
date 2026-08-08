@@ -34,6 +34,8 @@ class RuntimeSettings:
     neural_router_model: Path = Path(".ultron/models/neural_router.pt")
     execute_requested: bool = False
     write_audit: bool = True
+    whatsapp_contacts: dict[str, str] | None = None
+    whatsapp_require_confirmation: bool = True
 
     @classmethod
     def from_config(
@@ -67,6 +69,8 @@ class RuntimeSettings:
             neural_router_model=config.neural_router_model,
             execute_requested=execute_requested,
             write_audit=write_audit,
+            whatsapp_contacts=config.whatsapp_contacts,
+            whatsapp_require_confirmation=config.whatsapp_require_confirmation,
         )
 
 
@@ -142,13 +146,18 @@ class UltronAssistant:
     ) -> dict[str, Any]:
         llm_trace = llm_trace or {"attempted": False, "error": None}
         validation = validate_tool_call(plan.tool_call)
-        decision = decide(plan, validation, confirmed=confirmed)
+        whatsapp_auto_confirmed = (
+            plan.tool_call.name == "send_whatsapp_message"
+            and not self.settings.whatsapp_require_confirmation
+        )
+        decision = decide(plan, validation, confirmed=confirmed or whatsapp_auto_confirmed)
         executor = Executor(
             dry_run=self.settings.dry_run,
             workspace=self.settings.workspace,
             safe_roots=self.settings.safe_roots,
             app_aliases=self.settings.app_aliases or {},
             screenshot_dir=self.settings.screenshot_dir,
+            whatsapp_contacts=self.settings.whatsapp_contacts or {},
         )
         if decision.action == "allow":
             result = executor.execute(plan.tool_call)
@@ -176,6 +185,8 @@ class UltronAssistant:
                 "dry_run": self.settings.dry_run,
                 "execute_requested": self.settings.execute_requested,
                 "confirmed": confirmed,
+                "auto_confirmed": whatsapp_auto_confirmed,
+                "whatsapp_require_confirmation": self.settings.whatsapp_require_confirmation,
                 "dataset_path": str(self.settings.dataset_path),
                 "workspace": str(self.settings.workspace),
                 "safe_roots": [str(root) for root in self.settings.safe_roots],

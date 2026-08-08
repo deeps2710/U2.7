@@ -3,30 +3,119 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ULTRON 2.7 Interface</title>
+    <meta name="theme-color" content="#06090b" />
+    <title>ULTRON 2.7</title>
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/ultron-logo.png" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
-  <body>
-    <canvas id="ultron-scene" aria-label="ULTRON animated plasma sphere"></canvas>
-    <div class="digital-noise" aria-hidden="true"></div>
-    <button id="detailToggle" class="detail-toggle" type="button" aria-pressed="false" aria-label="Hide detailed panels">
-      <span></span>
-      <span></span>
-      <span></span>
-    </button>
-    <main class="shell">
-      <header class="topbar">
+  <body class="app-booting">
+    <section id="startupSequence" class="startup-sequence" role="status" aria-live="polite" aria-label="ULTRON startup sequence">
+      <header class="startup-identity">
+        <img src="/ultron-logo.png" alt="" aria-hidden="true" />
         <div>
-          <p class="eyebrow">ULTRON 2.7</p>
-          <h1>Neural Voice Interface</h1>
+          <strong>ULTRON <span>2.7</span></strong>
+          <small>Local command system</small>
         </div>
-        <div class="status-stack">
-          <div class="status-strip">
+        <output id="startupProgressValue">00</output>
+      </header>
+
+      <div class="startup-core-lock" aria-hidden="true">
+        <div class="startup-target">
+          <span class="target-corner target-corner-nw"></span>
+          <span class="target-corner target-corner-ne"></span>
+          <span class="target-corner target-corner-sw"></span>
+          <span class="target-corner target-corner-se"></span>
+          <span class="target-axis target-axis-x"></span>
+          <span class="target-axis target-axis-y"></span>
+          <span class="target-sweep"></span>
+        </div>
+      </div>
+
+      <ul id="startupModules" class="startup-modules" aria-label="Subsystem initialization">
+        <li data-startup-module>
+          <span class="startup-module-icon"><i data-lucide="orbit" aria-hidden="true"></i></span>
+          <span><b>Neural core</b><small>CORE</small></span>
+          <output data-startup-module-status>WAIT</output>
+        </li>
+        <li data-startup-module>
+          <span class="startup-module-icon"><i data-lucide="audio-waveform" aria-hidden="true"></i></span>
+          <span><b>Voice link</b><small>AUDIO</small></span>
+          <output data-startup-module-status>WAIT</output>
+        </li>
+        <li data-startup-module>
+          <span class="startup-module-icon"><i data-lucide="brain-circuit" aria-hidden="true"></i></span>
+          <span><b>Memory matrix</b><small>CONTEXT</small></span>
+          <output data-startup-module-status>WAIT</output>
+        </li>
+        <li data-startup-module>
+          <span class="startup-module-icon"><i data-lucide="globe-2" aria-hidden="true"></i></span>
+          <span><b>Research link</b><small>NETWORK</small></span>
+          <output data-startup-module-status>WAIT</output>
+        </li>
+        <li data-startup-module>
+          <span class="startup-module-icon"><i data-lucide="scan-eye" aria-hidden="true"></i></span>
+          <span><b>Vision stack</b><small>OPTICS</small></span>
+          <output data-startup-module-status>WAIT</output>
+        </li>
+        <li data-startup-module>
+          <span class="startup-module-icon"><i data-lucide="workflow" aria-hidden="true"></i></span>
+          <span><b>Action runtime</b><small>TOOLS</small></span>
+          <output data-startup-module-status>WAIT</output>
+        </li>
+      </ul>
+
+      <footer class="startup-telemetry">
+        <div>
+          <span>INITIALIZATION</span>
+          <strong id="startupStatusText">Core handshake</strong>
+        </div>
+        <div class="startup-progress-track" aria-hidden="true">
+          <span id="startupProgressBar"></span>
+        </div>
+        <small>U2.7 / LOCAL RUNTIME</small>
+      </footer>
+    </section>
+
+    <canvas id="ultron-scene" aria-label="ULTRON animated neural core"></canvas>
+    <div class="interface-grid" aria-hidden="true"></div>
+    <div class="scanline" aria-hidden="true"></div>
+
+    <button
+      id="detailToggle"
+      class="detail-toggle icon-button"
+      type="button"
+      aria-pressed="false"
+      aria-label="Hide operations drawer"
+      title="Toggle operations drawer"
+    >
+      <i data-lucide="panel-right-open" aria-hidden="true"></i>
+    </button>
+
+    <main class="shell">
+      <header class="topbar detail-panel">
+        <div class="brand-lockup">
+          <img class="brand-mark" src="/ultron-logo.png" alt="" aria-hidden="true" />
+          <div>
+            <h1>ULTRON <span>2.7</span></h1>
+            <p>Personal command system</p>
+          </div>
+        </div>
+        <div class="topbar-status">
+          <div class="status-strip" aria-live="polite">
             <span id="statusDot" class="status-dot"></span>
             <span id="statusLabel">Idle</span>
           </div>
-          <a class="diagnostics-link" href="/diagnostics">Diagnostics</a>
           <div id="voiceBadge" class="voice-badge">Voice standby</div>
+          <button id="gestureToggle" class="icon-button gesture-toggle" type="button" aria-pressed="false" aria-label="Enable hand controls" title="Hand controls">
+            <i data-lucide="hand" aria-hidden="true"></i>
+          </button>
+          <button class="icon-button gesture-guide-trigger" type="button" data-open-hand-guide aria-label="Open hand gesture guide" title="Hand gesture guide">
+            <i data-lucide="book-open" aria-hidden="true"></i>
+          </button>
+          <a class="icon-button diagnostics-link" href="/diagnostics" aria-label="Open diagnostics" title="Diagnostics">
+            <i data-lucide="activity" aria-hidden="true"></i>
+          </a>
         </div>
       </header>
 
@@ -35,153 +124,482 @@
       </section>
 
       <section class="mic-dock" aria-label="Core microphone control">
-        <button id="coreMicButton" class="core-mic-button" type="button" aria-pressed="false" aria-label="Start microphone capture">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z"></path>
-            <path d="M5 11a7 7 0 0 0 14 0"></path>
-            <path d="M12 18v3"></path>
-            <path d="M8 21h8"></path>
-          </svg>
+        <div class="mic-orbit" aria-hidden="true"></div>
+        <button
+          id="coreMicButton"
+          class="core-mic-button"
+          type="button"
+          aria-pressed="false"
+          aria-label="Start microphone capture"
+          title="Microphone"
+        >
+          <i data-lucide="mic" aria-hidden="true"></i>
         </button>
       </section>
 
-      <section class="subtitles detail-panel" id="subtitlePanel" aria-live="polite">
-        <div class="subtitle-header">
-          <span>Live subtitles</span>
-          <button id="subtitleToggle" type="button" aria-pressed="true">On</button>
-        </div>
-        <p id="subtitleText">ULTRON 2.7 online.</p>
-      </section>
-
-      <section class="voice-console detail-panel" aria-label="Voice controls">
-        <button id="micToggle" type="button">Mic On</button>
-        <button id="backendCaptureButton" type="button">Backend Mic</button>
-        <button id="alwaysListeningToggle" type="button" aria-pressed="false">Always Off</button>
-        <button id="pushToTalkToggle" type="button" aria-pressed="true">Push-to-talk</button>
-        <button id="muteToggle" type="button" aria-pressed="false">Mute Off</button>
-        <button id="stopSpeakingButton" type="button">Stop Voice</button>
-        <button id="confirmVoiceButton" class="confirm-action" type="button" hidden>Confirm</button>
-        <button id="mockVoiceButton" type="button">Mock Voice</button>
-      </section>
-
-      <section class="provider-panel detail-panel" aria-label="Voice provider status">
-        <div>
-          <span>STT</span>
-          <strong id="sttProviderLabel">text_payload</strong>
-          <small id="sttProviderDetail">Ready</small>
-        </div>
-        <div>
-          <span>Capture</span>
-          <strong id="captureProviderLabel">browser</strong>
-          <small id="captureProviderDetail">Browser capture</small>
-        </div>
-        <div>
-          <span>TTS</span>
-          <strong id="ttsProviderLabel">browser_speech_synthesis</strong>
-          <small id="ttsProviderDetail">Ready</small>
-        </div>
-        <button id="refreshProvidersButton" type="button">Refresh</button>
-        <button id="testProvidersButton" type="button">Test Voice</button>
-        <button id="calibrateVoiceButton" type="button">Calibrate</button>
-      </section>
-
-      <section class="wake-panel detail-panel" aria-label="Wake word and voice activity status">
-        <div>
-          <span>Microphone</span>
-          <strong id="micStatusLabel">Off</strong>
-          <small id="micPrivacyDetail">Push-to-talk available</small>
-        </div>
-        <div>
-          <span>Wake gate</span>
-          <strong id="wakeStateLabel">Inactive</strong>
-          <small id="wakeDetail">Say ULTRON or Hey ULTRON</small>
-        </div>
-        <div>
-          <span>Voice activity</span>
-          <strong id="vadStateLabel">Idle</strong>
-          <small id="vadDetail">No speech segment yet</small>
-        </div>
-      </section>
-
-      <section class="voice-diagnostics detail-panel" aria-label="Voice diagnostics">
-        <div>
-          <span>Understood</span>
-          <strong id="lastTranscriptLabel">None</strong>
-          <small id="confidenceDetail">Confidence pending</small>
-        </div>
-        <div>
-          <span>Audio segment</span>
-          <strong id="audioStateLabel">Idle</strong>
-          <small id="audioDetail">No backend audio yet</small>
-        </div>
-      </section>
-
-      <section class="command-row detail-panel" aria-label="Command input">
-        <input id="commandInput" type="text" autocomplete="off" placeholder="Type a command for ULTRON..." />
-        <button id="sendButton" type="button">Send</button>
-      </section>
-
-      <section class="phase12-grid detail-panel" aria-label="Skills, knowledge, and task history">
-        <div class="phase12-panel">
-          <div class="history-header">Skills</div>
-          <ul id="skillsList" class="compact-list"></ul>
-        </div>
-        <div class="phase12-panel">
-          <div class="history-header">Memory and knowledge</div>
-          <div class="memory-controls">
-            <button id="memoryToggle" type="button" aria-pressed="true">Memory On</button>
-            <input id="memoryForgetInput" type="text" autocomplete="off" placeholder="Forget memory..." />
-            <button id="memoryForgetButton" type="button">Forget</button>
+      <aside id="operationsDrawer" class="operations-drawer detail-panel" aria-label="ULTRON operations drawer">
+        <header class="drawer-header">
+          <div>
+            <p class="section-kicker">Command center</p>
+            <h2>Operations</h2>
           </div>
-          <div class="knowledge-search">
-            <input id="knowledgeSearchInput" type="text" autocomplete="off" placeholder="Search local knowledge..." />
-            <button id="knowledgeSearchButton" type="button">Search</button>
+          <div class="drawer-signal" aria-label="Runtime connected">
+            <span></span>
+            <b id="runtimeShellLabel">Local</b>
           </div>
-          <ul id="knowledgeList" class="compact-list"></ul>
-        </div>
-        <div class="phase12-panel">
-          <div class="history-header">Recent tasks</div>
-          <ol id="recentTasksList" class="compact-list"></ol>
-        </div>
-      </section>
+        </header>
 
-      <section class="voice-history detail-panel" aria-label="Voice transcript history">
-        <div class="history-header">Conversation history</div>
-        <ol id="voiceHistory"></ol>
-      </section>
+        <nav class="drawer-tabs" role="tablist" aria-label="Operations views">
+          <button class="drawer-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="activityPanel" data-drawer-tab="activity">
+            <i data-lucide="messages-square" aria-hidden="true"></i>
+            <span>Activity</span>
+          </button>
+          <button class="drawer-tab" type="button" role="tab" aria-selected="false" aria-controls="voicePanel" data-drawer-tab="voice">
+            <i data-lucide="audio-lines" aria-hidden="true"></i>
+            <span>Voice</span>
+          </button>
+          <button class="drawer-tab" type="button" role="tab" aria-selected="false" aria-controls="systemPanel" data-drawer-tab="system">
+            <i data-lucide="cpu" aria-hidden="true"></i>
+            <span>System</span>
+          </button>
+        </nav>
 
-      <nav class="state-controls detail-panel" aria-label="Visual state controls">
-        <button data-state="listening" type="button">Listening</button>
-        <button data-state="thinking" type="button">Thinking</button>
-        <button data-state="speaking" type="button">Speaking</button>
-        <button data-state="waiting_for_wake_word" type="button">Wake</button>
-        <button data-state="inactive" type="button">Shutdown</button>
-        <button data-state="idle" type="button">Idle</button>
-      </nav>
+        <div class="drawer-content">
+          <section id="activityPanel" class="drawer-view is-active" role="tabpanel" data-drawer-panel="activity">
+            <section class="subtitles" id="subtitlePanel" aria-live="polite">
+              <div class="section-heading">
+                <div>
+                  <span class="section-kicker">Live response</span>
+                  <strong>ULTRON</strong>
+                </div>
+                <button id="subtitleToggle" class="compact-toggle" type="button" aria-pressed="true">
+                  <i data-lucide="captions" aria-hidden="true"></i>
+                  <span data-button-label>On</span>
+                </button>
+              </div>
+              <p id="subtitleText">ULTRON 2.7 online.</p>
+            </section>
+
+            <section class="command-row" aria-label="Command input">
+              <i data-lucide="terminal" aria-hidden="true"></i>
+              <input id="commandInput" type="text" autocomplete="off" placeholder="Ask ULTRON" aria-label="Command for ULTRON" />
+              <button id="sendButton" class="send-button icon-button" type="button" aria-label="Send command" title="Send command">
+                <i data-lucide="arrow-up" aria-hidden="true"></i>
+              </button>
+            </section>
+
+            <section class="activity-section voice-history" aria-label="Voice transcript history">
+              <div class="section-heading">
+                <div>
+                  <span class="section-kicker">Session</span>
+                  <strong>Conversation</strong>
+                </div>
+                <i data-lucide="history" aria-hidden="true"></i>
+              </div>
+              <ol id="voiceHistory"></ol>
+            </section>
+
+            <section class="activity-section recent-tasks" aria-label="Recent tasks">
+              <div class="section-heading">
+                <div>
+                  <span class="section-kicker">Execution</span>
+                  <strong>Recent tasks</strong>
+                </div>
+                <i data-lucide="list-checks" aria-hidden="true"></i>
+              </div>
+              <ol id="recentTasksList" class="compact-list"></ol>
+            </section>
+          </section>
+
+          <section id="voicePanel" class="drawer-view" role="tabpanel" data-drawer-panel="voice" hidden>
+            <section class="wake-panel metric-list" aria-label="Wake word and voice activity status">
+              <div class="metric-row">
+                <span class="metric-icon"><i data-lucide="mic-2" aria-hidden="true"></i></span>
+                <div>
+                  <span>Microphone</span>
+                  <strong id="micStatusLabel">Off</strong>
+                  <small id="micPrivacyDetail">Push-to-talk available</small>
+                </div>
+              </div>
+              <div class="metric-row">
+                <span class="metric-icon is-cyan"><i data-lucide="radio-tower" aria-hidden="true"></i></span>
+                <div>
+                  <span>Wake gate</span>
+                  <strong id="wakeStateLabel">Inactive</strong>
+                  <small id="wakeDetail">Waiting for runtime</small>
+                </div>
+              </div>
+              <div class="metric-row">
+                <span class="metric-icon is-amber"><i data-lucide="audio-waveform" aria-hidden="true"></i></span>
+                <div>
+                  <span>Voice activity</span>
+                  <strong id="vadStateLabel">Idle</strong>
+                  <small id="vadDetail">No speech segment yet</small>
+                </div>
+              </div>
+            </section>
+
+            <section class="control-section" aria-label="Voice controls">
+              <div class="section-heading">
+                <div>
+                  <span class="section-kicker">Input and output</span>
+                  <strong>Voice controls</strong>
+                </div>
+                <i data-lucide="sliders-horizontal" aria-hidden="true"></i>
+              </div>
+              <div class="voice-console">
+                <button id="micToggle" type="button"><i data-lucide="mic" aria-hidden="true"></i><span data-button-label>Start Mic</span></button>
+                <button id="backendCaptureButton" type="button"><i data-lucide="radio" aria-hidden="true"></i><span>Backend Mic</span></button>
+                <button id="alwaysListeningToggle" type="button" aria-pressed="false"><i data-lucide="scan-line" aria-hidden="true"></i><span data-button-label>Always Off</span></button>
+                <button id="pushToTalkToggle" type="button" aria-pressed="true"><i data-lucide="audio-waveform" aria-hidden="true"></i><span data-button-label>Push-to-talk</span></button>
+                <button id="muteToggle" type="button" aria-pressed="false"><i data-lucide="volume-2" aria-hidden="true"></i><span data-button-label>Mute Off</span></button>
+                <button id="stopSpeakingButton" type="button"><i data-lucide="square" aria-hidden="true"></i><span>Stop Voice</span></button>
+                <button id="confirmVoiceButton" class="confirm-action" type="button" hidden><i data-lucide="check" aria-hidden="true"></i><span>Confirm</span></button>
+                <button id="mockVoiceButton" type="button"><i data-lucide="flask-conical" aria-hidden="true"></i><span>Mock Voice</span></button>
+              </div>
+            </section>
+
+            <section class="provider-panel" aria-label="Voice provider status">
+              <div class="section-heading">
+                <div>
+                  <span class="section-kicker">Pipeline</span>
+                  <strong>Providers</strong>
+                </div>
+                <i data-lucide="network" aria-hidden="true"></i>
+              </div>
+              <div class="provider-list">
+                <div><span>STT</span><strong id="sttProviderLabel">text_payload</strong><small id="sttProviderDetail">Ready</small></div>
+                <div><span>Capture</span><strong id="captureProviderLabel">browser</strong><small id="captureProviderDetail">Browser capture</small></div>
+                <div><span>TTS</span><strong id="ttsProviderLabel">browser_speech_synthesis</strong><small id="ttsProviderDetail">Ready</small></div>
+              </div>
+              <div class="inline-actions">
+                <button id="refreshProvidersButton" type="button"><i data-lucide="refresh-cw" aria-hidden="true"></i><span>Refresh</span></button>
+                <button id="testProvidersButton" type="button"><i data-lucide="badge-check" aria-hidden="true"></i><span>Test</span></button>
+                <button id="calibrateVoiceButton" type="button"><i data-lucide="gauge" aria-hidden="true"></i><span>Calibrate</span></button>
+              </div>
+            </section>
+
+            <section class="voice-diagnostics" aria-label="Voice diagnostics">
+              <div class="section-heading">
+                <div>
+                  <span class="section-kicker">Signal trace</span>
+                  <strong>Diagnostics</strong>
+                </div>
+                <i data-lucide="chart-no-axes-combined" aria-hidden="true"></i>
+              </div>
+              <div class="diagnostic-row"><span>Understood</span><strong id="lastTranscriptLabel">None</strong><small id="confidenceDetail">Confidence pending</small></div>
+              <div class="diagnostic-row"><span>Audio segment</span><strong id="audioStateLabel">Idle</strong><small id="audioDetail">No backend audio yet</small></div>
+            </section>
+          </section>
+
+          <section id="systemPanel" class="drawer-view" role="tabpanel" data-drawer-panel="system" hidden>
+            <section class="system-section" aria-label="Skills">
+              <div class="section-heading">
+                <div><span class="section-kicker">Capabilities</span><strong>Skills</strong></div>
+                <i data-lucide="blocks" aria-hidden="true"></i>
+              </div>
+              <ul id="skillsList" class="compact-list"></ul>
+            </section>
+
+            <section class="system-section" aria-label="Memory and knowledge">
+              <div class="section-heading">
+                <div><span class="section-kicker">Context</span><strong>Memory and knowledge</strong></div>
+                <i data-lucide="database" aria-hidden="true"></i>
+              </div>
+              <div class="memory-controls">
+                <button id="memoryToggle" type="button" aria-pressed="true"><i data-lucide="brain-circuit" aria-hidden="true"></i><span data-button-label>Memory On</span></button>
+                <input id="memoryForgetInput" type="text" autocomplete="off" placeholder="Memory to forget" aria-label="Memory to forget" />
+                <button id="memoryForgetButton" class="icon-button" type="button" aria-label="Forget memory" title="Forget memory"><i data-lucide="trash-2" aria-hidden="true"></i></button>
+              </div>
+              <div class="knowledge-search">
+                <input id="knowledgeSearchInput" type="text" autocomplete="off" placeholder="Search local knowledge" aria-label="Search local knowledge" />
+                <button id="knowledgeSearchButton" class="icon-button" type="button" aria-label="Search knowledge" title="Search knowledge"><i data-lucide="search" aria-hidden="true"></i></button>
+              </div>
+              <ul id="knowledgeList" class="compact-list"></ul>
+            </section>
+
+            <section class="system-section hand-control-section" aria-label="Hand input controls">
+              <div class="section-heading">
+                <div><span class="section-kicker">Vision input</span><strong>Hand control</strong></div>
+                <i data-lucide="mouse-pointer-2" aria-hidden="true"></i>
+              </div>
+              <div class="hand-control-status">
+                <span class="metric-icon is-cyan"><i data-lucide="scan" aria-hidden="true"></i></span>
+                <div>
+                  <span id="handControlModeLabel">ULTRON workspace</span>
+                  <strong id="handControlStatusLabel">Off</strong>
+                  <small id="handControlStatusDetail">Choose a mode, then start hand control</small>
+                </div>
+              </div>
+              <div class="gesture-mode-control" role="group" aria-label="Hand control scope">
+                <button type="button" data-gesture-mode="workspace" aria-pressed="true"><i data-lucide="panels-top-left" aria-hidden="true"></i><span>ULTRON</span></button>
+                <button id="desktopGestureModeButton" type="button" data-gesture-mode="desktop" aria-pressed="false"><i data-lucide="monitor-up" aria-hidden="true"></i><span>Desktop</span></button>
+              </div>
+              <div class="hand-control-actions">
+                <button id="gestureSystemToggle" type="button" aria-pressed="false"><i data-lucide="hand" aria-hidden="true"></i><span data-button-label>Start</span></button>
+                <button id="gesturePauseButton" type="button" aria-pressed="false" disabled><i data-lucide="pause" aria-hidden="true"></i><span data-button-label>Pause</span></button>
+                <button type="button" data-open-hand-guide><i data-lucide="book-open" aria-hidden="true"></i><span>Guide</span></button>
+              </div>
+              <label class="hand-sensitivity" for="gestureSensitivitySlider">
+                <span><i data-lucide="gauge" aria-hidden="true"></i> Pointer response</span>
+                <output id="gestureSensitivityValue" for="gestureSensitivitySlider">100%</output>
+                <input id="gestureSensitivitySlider" type="range" min="0.55" max="1.8" step="0.05" value="1" />
+              </label>
+            </section>
+
+            <section class="system-section" aria-label="Visual state controls">
+              <div class="section-heading">
+                <div><span class="section-kicker">Core engine</span><strong>Visual state</strong></div>
+                <i data-lucide="orbit" aria-hidden="true"></i>
+              </div>
+              <nav class="state-controls">
+                <button data-state="listening" type="button">Listening</button>
+                <button data-state="thinking" type="button">Thinking</button>
+                <button data-state="speaking" type="button">Speaking</button>
+                <button data-state="waiting_for_wake_word" type="button">Wake</button>
+                <button data-state="inactive" type="button">Shutdown</button>
+                <button data-state="idle" type="button">Idle</button>
+              </nav>
+            </section>
+
+            <a class="system-diagnostics-link" href="/diagnostics">
+              <i data-lucide="activity" aria-hidden="true"></i>
+              <span>Open diagnostics</span>
+              <i data-lucide="arrow-up-right" aria-hidden="true"></i>
+            </a>
+          </section>
+        </div>
+      </aside>
     </main>
+
+    <div id="workspaceLayer" class="workspace-layer" aria-label="ULTRON floating workspace">
+      <section id="cameraWindow" class="app-window camera-window" role="dialog" aria-modal="false" aria-labelledby="cameraWindowTitle" hidden>
+        <header class="app-window-bar" data-window-drag-handle>
+          <div class="app-window-title">
+            <span class="app-window-icon"><i data-lucide="camera" aria-hidden="true"></i></span>
+            <div>
+              <span class="section-kicker">Vision console</span>
+              <strong id="cameraWindowTitle">Camera</strong>
+            </div>
+          </div>
+          <div class="app-window-actions">
+            <button type="button" class="icon-button" data-window-action="minimize" aria-label="Minimize camera" title="Minimize">
+              <i data-lucide="minus" aria-hidden="true"></i>
+            </button>
+            <button type="button" class="icon-button" data-window-action="maximize" aria-label="Maximize camera" title="Maximize">
+              <i data-lucide="maximize-2" aria-hidden="true"></i>
+            </button>
+            <button type="button" class="icon-button" data-window-action="close" aria-label="Close camera" title="Close">
+              <i data-lucide="x" aria-hidden="true"></i>
+            </button>
+          </div>
+        </header>
+        <div class="app-window-body camera-body">
+          <div class="camera-viewport">
+            <video id="cameraFeed" autoplay playsinline muted></video>
+            <canvas id="gestureOverlay" class="gesture-overlay" aria-hidden="true"></canvas>
+            <canvas id="objectOverlay" class="object-overlay" aria-hidden="true"></canvas>
+            <img id="cameraSnapshot" alt="Latest ULTRON camera capture" hidden />
+            <div id="cameraReticle" class="camera-reticle" aria-hidden="true"><span></span></div>
+            <div id="objectScanProgress" class="object-scan-progress" hidden>
+              <div class="object-scan-heading">
+                <span id="objectScanLabel">360 object scan</span>
+                <strong id="objectScanPercent">0%</strong>
+              </div>
+              <progress id="objectScanMeter" max="12" value="0">0%</progress>
+              <div class="object-scan-footer">
+                <span id="objectScanViews">0 / 12 views</span>
+                <button id="objectScanCancelButton" class="icon-button" type="button" aria-label="Cancel object scan" title="Cancel scan">
+                  <i data-lucide="x" aria-hidden="true"></i>
+                </button>
+              </div>
+            </div>
+            <p id="cameraPermissionMessage">Camera is preparing.</p>
+          </div>
+          <footer class="camera-controls">
+            <div>
+              <span class="section-kicker">Capture status</span>
+              <strong id="cameraStatus">Waiting for camera permission</strong>
+            </div>
+            <button id="cameraCaptureButton" class="primary-command" type="button">
+              <i data-lucide="aperture" aria-hidden="true"></i>
+              <span>Capture</span>
+            </button>
+          </footer>
+          <canvas id="cameraCanvas" hidden></canvas>
+        </div>
+      </section>
+
+      <section id="researchWindow" class="app-window research-window" role="dialog" aria-modal="false" aria-labelledby="researchWindowTitle" hidden>
+        <header class="app-window-bar" data-window-drag-handle>
+          <div class="app-window-title">
+            <span class="app-window-icon is-cyan"><i data-lucide="globe-2" aria-hidden="true"></i></span>
+            <div>
+              <span class="section-kicker">Live intelligence</span>
+              <strong id="researchWindowTitle">Research</strong>
+            </div>
+          </div>
+          <div class="app-window-actions">
+            <button type="button" class="icon-button" data-window-action="minimize" aria-label="Minimize research" title="Minimize">
+              <i data-lucide="minus" aria-hidden="true"></i>
+            </button>
+            <button type="button" class="icon-button" data-window-action="maximize" aria-label="Maximize research" title="Maximize">
+              <i data-lucide="maximize-2" aria-hidden="true"></i>
+            </button>
+            <button type="button" class="icon-button" data-window-action="close" aria-label="Close research" title="Close">
+              <i data-lucide="x" aria-hidden="true"></i>
+            </button>
+          </div>
+        </header>
+        <div class="app-window-body research-body">
+          <form id="researchForm" class="research-query" role="search">
+            <i data-lucide="search" aria-hidden="true"></i>
+            <input id="researchQueryInput" type="search" autocomplete="off" placeholder="Research a topic" aria-label="Research topic" />
+            <button id="researchSubmitButton" class="icon-button" type="submit" aria-label="Start research" title="Start research">
+              <i data-lucide="arrow-right" aria-hidden="true"></i>
+            </button>
+          </form>
+          <div class="research-meta">
+            <span id="researchStatus" class="research-status">Ready</span>
+            <span id="researchSourceCount">0 sources</span>
+          </div>
+          <article id="researchSummary" class="research-summary">
+            <h3>Research console ready</h3>
+            <p>Ask ULTRON to gather information or enter a topic above.</p>
+          </article>
+          <section class="research-sources" aria-labelledby="researchSourcesTitle">
+            <div class="section-heading">
+              <div><span class="section-kicker">Evidence</span><strong id="researchSourcesTitle">Sources</strong></div>
+              <i data-lucide="external-link" aria-hidden="true"></i>
+            </div>
+            <ol id="researchSources"></ol>
+          </section>
+        </div>
+      </section>
+
+      <section id="modelWindow" class="app-window model-window" role="dialog" aria-modal="false" aria-labelledby="modelWindowTitle" hidden>
+        <header class="app-window-bar" data-window-drag-handle>
+          <div class="app-window-title">
+            <span class="app-window-icon is-amber"><i data-lucide="box" aria-hidden="true"></i></span>
+            <div>
+              <span class="section-kicker">Spatial designer</span>
+              <strong id="modelWindowTitle">3D Designer</strong>
+            </div>
+          </div>
+          <div class="app-window-actions">
+            <button type="button" class="icon-button" data-window-action="minimize" aria-label="Minimize 3D designer" title="Minimize">
+              <i data-lucide="minus" aria-hidden="true"></i>
+            </button>
+            <button type="button" class="icon-button" data-window-action="maximize" aria-label="Maximize 3D designer" title="Maximize">
+              <i data-lucide="maximize-2" aria-hidden="true"></i>
+            </button>
+            <button type="button" class="icon-button" data-window-action="close" aria-label="Close 3D designer" title="Close">
+              <i data-lucide="x" aria-hidden="true"></i>
+            </button>
+          </div>
+        </header>
+        <div class="app-window-body model-body">
+          <div class="model-stage">
+            <canvas id="modelCanvas" aria-label="Interactive 3D model"></canvas>
+            <div class="model-hud">
+              <span id="modelStatus">Designer ready</span>
+              <strong id="modelStats">No mesh</strong>
+            </div>
+          </div>
+          <footer class="model-toolbar">
+            <button id="modelScanButton" class="icon-button" type="button" aria-label="Scan camera object" title="Scan object">
+              <i data-lucide="scan-line" aria-hidden="true"></i>
+            </button>
+            <button id="model360Button" class="icon-button" type="button" aria-label="Start 360 degree object scan" title="360 scan">
+              <i data-lucide="rotate-3d" aria-hidden="true"></i>
+            </button>
+            <label class="scale-control" for="modelScaleSlider">
+              <i data-lucide="scaling" aria-hidden="true"></i>
+              <input id="modelScaleSlider" type="range" min="0.2" max="3.2" step="0.05" value="1" aria-label="Model size" />
+            </label>
+            <button id="modelVisibilityButton" class="icon-button" type="button" aria-pressed="true" aria-label="Hide 3D model" title="Hide model">
+              <i data-lucide="eye" aria-hidden="true"></i>
+            </button>
+            <button id="modelWireframeButton" class="icon-button" type="button" aria-pressed="false" aria-label="Toggle wireframe" title="Wireframe">
+              <i data-lucide="scan" aria-hidden="true"></i>
+            </button>
+            <button id="modelResetButton" class="icon-button" type="button" aria-label="Reset 3D view" title="Reset view">
+              <i data-lucide="rotate-ccw" aria-hidden="true"></i>
+            </button>
+            <button id="modelExportButton" class="icon-button" type="button" aria-label="Export OBJ model" title="Export OBJ">
+              <i data-lucide="download" aria-hidden="true"></i>
+            </button>
+          </footer>
+        </div>
+      </section>
+    </div>
+
+    <div id="gestureCursor" class="gesture-cursor" aria-hidden="true" hidden><span></span></div>
+
+    <section id="handGuideModal" class="hand-guide-modal" role="dialog" aria-modal="true" aria-labelledby="handGuideTitle" hidden>
+      <div class="hand-guide-dialog">
+        <header class="hand-guide-heading">
+          <div>
+            <span class="section-kicker">Desktop input map</span>
+            <h2 id="handGuideTitle">Hand gesture guide</h2>
+          </div>
+          <button id="handGuideCloseButton" class="icon-button" type="button" aria-label="Close hand gesture guide" title="Close guide">
+            <i data-lucide="x" aria-hidden="true"></i>
+          </button>
+        </header>
+
+        <div class="hand-guide-live-status" aria-live="polite">
+          <span id="handGuideStatusDot"></span>
+          <div><strong id="handGuideStatusLabel">Hand control is off</strong><small id="handGuideStatusDetail">Desktop mode works only inside the ULTRON application</small></div>
+          <kbd>Ctrl</kbd><span>+</span><kbd>Alt</kbd><span>+</span><kbd>H</kbd>
+        </div>
+
+        <div class="gesture-map" aria-label="Desktop hand gesture mappings">
+          <div class="gesture-map-row"><span class="gesture-count">1</span><div><strong>Move cursor</strong><p>Raise only your index finger and move its tip around the camera frame.</p></div><i data-lucide="mouse-pointer-2" aria-hidden="true"></i></div>
+          <div class="gesture-map-row"><span class="gesture-count">1</span><div><strong>Left click or double-click</strong><p>Pinch thumb and index once, or perform the same pinch twice quickly.</p></div><i data-lucide="mouse" aria-hidden="true"></i></div>
+          <div class="gesture-map-row"><span class="gesture-count">1</span><div><strong>Drag and drop</strong><p>Hold the thumb-index pinch, move your hand, then release over the destination.</p></div><i data-lucide="grab" aria-hidden="true"></i></div>
+          <div class="gesture-map-row"><span class="gesture-count">1</span><div><strong>Right click</strong><p>Pinch your thumb and middle fingertip, then release.</p></div><i data-lucide="menu" aria-hidden="true"></i></div>
+          <div class="gesture-map-row"><span class="gesture-count">1</span><div><strong>Middle click</strong><p>Pinch your thumb and ring fingertip, then release.</p></div><i data-lucide="circle-dot" aria-hidden="true"></i></div>
+          <div class="gesture-map-row"><span class="gesture-count">2</span><div><strong>Scroll vertically or horizontally</strong><p>Raise index and middle fingers together and move them in the direction you want to scroll.</p></div><i data-lucide="move" aria-hidden="true"></i></div>
+          <div class="gesture-map-row"><span class="gesture-count">2</span><div><strong>Zoom in or out</strong><p>With two fingers raised, spread them or bring them together. Two open hands moving apart or together also works.</p></div><i data-lucide="scan-search" aria-hidden="true"></i></div>
+          <div class="gesture-map-row"><span class="gesture-count">3</span><div><strong>Show desktop</strong><p>Raise index, middle, and ring fingers, then swipe down to minimize all windows.</p></div><i data-lucide="minimize-2" aria-hidden="true"></i></div>
+          <div class="gesture-map-row"><span class="gesture-count">3</span><div><strong>Restore windows</strong><p>Keep the same three fingers raised and swipe up to restore the windows you minimized.</p></div><i data-lucide="maximize-2" aria-hidden="true"></i></div>
+          <div class="gesture-map-row"><span class="gesture-count">3</span><div><strong>Switch apps</strong><p>Swipe left for the previous app or right for the next open app.</p></div><i data-lucide="gallery-horizontal-end" aria-hidden="true"></i></div>
+          <div class="gesture-map-row"><span class="gesture-count">4</span><div><strong>Switch virtual desktops</strong><p>Raise four fingers and swipe left or right.</p></div><i data-lucide="panel-left-open" aria-hidden="true"></i></div>
+          <div class="gesture-map-row"><span class="gesture-count">4</span><div><strong>Open Task View</strong><p>Raise four fingers and swipe up.</p></div><i data-lucide="panels-top-left" aria-hidden="true"></i></div>
+          <div class="gesture-map-row"><span class="gesture-count">P</span><div><strong>Browser back or forward</strong><p>Raise only your little finger and swipe left for back or right for forward.</p></div><i data-lucide="arrow-left-right" aria-hidden="true"></i></div>
+          <div class="gesture-map-row is-safety"><span class="gesture-count">F</span><div><strong>Pause or resume safely</strong><p>Hold a closed fist for one second. The same gesture resumes control after you open your hand once.</p></div><i data-lucide="shield-check" aria-hidden="true"></i></div>
+        </div>
+
+        <footer class="hand-guide-footer">
+          <p>Keep your palm facing the camera with steady lighting. Input stops and every held button releases when your hand disappears.</p>
+          <button id="handGuideToggleButton" type="button"><i data-lucide="hand" aria-hidden="true"></i><span data-button-label>Start hand control</span></button>
+        </footer>
+      </div>
+    </section>
+
     <section id="confirmationModal" class="confirmation-modal" aria-label="Action confirmation" aria-modal="true" hidden>
       <div class="confirmation-dialog">
-        <div>
-          <span class="confirmation-kicker">Confirmation required</span>
-          <h2 id="confirmationTitle">Review action</h2>
+        <div class="confirmation-heading">
+          <span class="confirmation-icon"><i data-lucide="shield-alert" aria-hidden="true"></i></span>
+          <div>
+            <span class="section-kicker">Confirmation required</span>
+            <h2 id="confirmationTitle">Review action</h2>
+          </div>
         </div>
         <p id="confirmationMessage">ULTRON paused before running this action.</p>
         <dl>
-          <div>
-            <dt>Tool</dt>
-            <dd id="confirmationTool">unknown</dd>
-          </div>
-          <div>
-            <dt>Permission</dt>
-            <dd id="confirmationPermission">pending</dd>
-          </div>
+          <div><dt>Tool</dt><dd id="confirmationTool">unknown</dd></div>
+          <div><dt>Permission</dt><dd id="confirmationPermission">pending</dd></div>
         </dl>
         <div class="confirmation-actions">
-          <button id="cancelConfirmationButton" type="button">Cancel</button>
-          <button id="approveConfirmationButton" class="confirm-action" type="button">Confirm</button>
+          <button id="cancelConfirmationButton" type="button"><i data-lucide="x" aria-hidden="true"></i><span>Cancel</span></button>
+          <button id="approveConfirmationButton" class="confirm-action" type="button"><i data-lucide="check" aria-hidden="true"></i><span>Confirm</span></button>
         </div>
       </div>
     </section>
+
+    <script src="/vendor/lucide.min.js"></script>
     <script type="module" src="/app.js"></script>
   </body>
 </html>

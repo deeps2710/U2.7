@@ -7,7 +7,10 @@
     ".",
     "~/Desktop",
     "~/Documents",
-    "~/Downloads"
+    "~/Downloads",
+    "~/Pictures",
+    "~/Music",
+    "~/Videos"
   ],
   "screenshot_dir": ".ultron/screenshots",
   "app_aliases": {
@@ -16,6 +19,10 @@
     "vs code": "code",
     "vscode": "code",
     "notepad": "notepad.exe",
+    "settings": "ms-settings:",
+    "camera": "microsoft.windows.camera:",
+    "task manager": "taskmgr.exe",
+    "control panel": "control.exe",
     "spotify": "spotify.exe",
     "calculator": "calc.exe",
     "calc": "calc.exe",
@@ -23,6 +30,10 @@
     "explorer": "explorer.exe",
     "terminal": "wt.exe"
   },
+  "whatsapp_contacts": {
+    "example contact": "+15551234567"
+  },
+  "whatsapp_require_confirmation": true,
   "planner_mode": "rules",
   "llm_provider": "ollama",
   "llm_model": "qwen2.5:7b-instruct",
@@ -37,15 +48,24 @@
   "voice_capture_seconds": 4,
   "voice_tts_provider": "browser_speech_synthesis",
   "voice_stt_model": null,
+  "voice_tts_model": "aura-2-orion-en",
+  "voice_stt_language": "multi",
+  "voice_stt_keyterms": [
+    "ULTRON",
+    "WhatsApp",
+    "Spotify"
+  ],
   "voice_stt_model_path": null,
   "voice_tts_model_path": null,
   "voice_tts_voice_path": null,
   "voice_device": "cpu",
   "voice_identity": "ULTRON",
-  "voice_rate": 0.94,
-  "voice_pitch": 0.86,
-  "voice_volume": 0.95,
+  "voice_preference": "Microsoft George",
+  "voice_rate": 1.03,
+  "voice_pitch": 1.0,
+  "voice_volume": 1.0,
   "wake_word_provider": "text",
+  "wake_auto_start": false,
   "wake_phrases": [
     "ULTRON",
     "Hey ULTRON"
@@ -60,5 +80,8 @@
   "clap_cooldown_s": 0.45,
   "clap_retrigger_ratio": 0.55,
   "clap_noise_floor_alpha": 0.992,
-  "clap_quiet_gate_mult": 2.2
+  "clap_quiet_gate_mult": 2.2,
+  "startup_briefing_enabled": true,
+  "assistant_location": "Jabalpur",
+  "speech_barge_in_enabled": true
 }

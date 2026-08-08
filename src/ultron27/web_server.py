@@ -1,27 +1,35 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import json
 import mimetypes
+import re
 import threading
+import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from .app_paths import resource_root
 from .audit import append_audit_record, read_recent_audit_records
 from .brain import TaskState, UltronBrain
 from .config import load_config
 from .conversation import ConversationManager
 from .diagnostics import PHASE13_VERSION, build_diagnostics
 from .knowledge import KnowledgeBase
+from .modeling import generate_model_scene
 from .runtime import RuntimeSettings, UltronAssistant
 from .skills import SkillRegistry
 from .voice import VoiceSession, build_voice_session
+from .weather import get_current_weather
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = resource_root()
 WEB_ROOT = ROOT / "web"
 
 
@@ -55,6 +63,11 @@ class WebState:
     last_subtitle: str = "ULTRON 2.7 online."
     last_task: dict[str, Any] | None = None
     recent_tasks: list[dict[str, Any]] = field(default_factory=list)
+    assistant_location: str = "Jabalpur"
+    startup_briefing_enabled: bool = True
+    speech_barge_in_enabled: bool = True
+    _briefing_cache: dict[str, Any] | None = field(default=None, init=False, repr=False)
+    _briefing_cached_at: float = field(default=0.0, init=False, repr=False)
 
     def __post_init__(self) -> None:
         settings = self.brain.assistant.settings
@@ -68,6 +81,13 @@ class WebState:
             )
         if self.skills is None:
             self.skills = SkillRegistry.with_builtins(self.brain.assistant, self.knowledge)
+        if self.voice.wake_status.always_listening:
+            self.visual_state = "waiting_for_wake_word"
+            self.last_subtitle = (
+                "Voice standby is active. Double clap to wake me."
+                if self.voice.wake_status.wake_provider == "double_clap"
+                else "Wake standby is active."
+            )
 
     def command(self, text: str, *, confirmed: bool = False, mode: str = "do") -> dict[str, Any]:
         command = text.strip()
@@ -78,7 +98,13 @@ class WebState:
             return self.snapshot({"status": "empty", "message": self.last_subtitle})
 
         lowered = command.lower()
-        if lowered.startswith("/plan "):
+        interface_request = _interface_request(command) if mode != "plan" and not lowered.startswith("/plan ") else None
+        ui_directive = None
+        if interface_request is not None:
+            response, ui_directive = interface_request
+            conversation_payload = self.conversation.interface_reply(command, response, route="interface") if self.conversation else None
+            task = _task_from_payload(conversation_payload)
+        elif lowered.startswith("/plan "):
             task = self.brain.plan(command[6:].strip())
             conversation_payload = None
         elif lowered.startswith("/do "):
@@ -118,7 +144,107 @@ class WebState:
                     "memory_enabled": conversation_payload.get("memory_enabled"),
                 }
             )
+            if conversation_payload.get("route") == "web_search":
+                ui_directive = _research_directive(self.last_task)
+        if ui_directive:
+            extra["ui_directive"] = ui_directive
         return self.snapshot(extra)
+
+    def research(self, query: str) -> dict[str, Any]:
+        clean = " ".join(str(query or "").strip().split())
+        if not clean:
+            return self.snapshot({"status": "empty", "message": "Enter a topic for the research console."})
+        return self.command(f"search the internet for {clean}")
+
+    def model_generate(self, description: str) -> dict[str, Any]:
+        result = generate_model_scene(description, self.brain.assistant.settings)
+        self.last_subtitle = str(result.get("message") or "3D model request processed.")
+        self.visual_state = "speaking" if result.get("status") == "success" else "listening"
+        if self.brain.assistant.settings.write_audit:
+            append_audit_record(
+                {
+                    "record_type": "model_generation",
+                    "description": str(description or "")[:180],
+                    "status": result.get("status"),
+                    "source": result.get("source"),
+                    "object_count": len((result.get("scene") or {}).get("objects") or []),
+                },
+                self.brain.assistant.settings.audit_log,
+            )
+        return self.snapshot(result)
+
+    def startup_briefing(self, *, force: bool = False) -> dict[str, Any]:
+        greeting = _time_greeting(datetime.now().hour)
+        if not self.startup_briefing_enabled:
+            return self.snapshot(
+                {
+                    "status": "disabled",
+                    "message": f"{greeting}, sir. ULTRON 2.7 is online.",
+                    "location": self.assistant_location,
+                    "barge_in_enabled": self.speech_barge_in_enabled,
+                }
+            )
+
+        now = time.time()
+        if not force and self._briefing_cache is not None and now - self._briefing_cached_at < 900:
+            return self.snapshot(dict(self._briefing_cache))
+
+        try:
+            weather = get_current_weather(self.assistant_location)
+            message = (
+                f"{greeting}, sir. In {weather.location}, it is {round(weather.temperature_c)} degrees Celsius "
+                f"and {weather.condition}. It feels like {round(weather.apparent_temperature_c)} degrees, "
+                f"with {weather.humidity_percent} percent humidity and wind near {round(weather.wind_speed_kmh)} kilometers per hour."
+            )
+            payload = {
+                "status": "ok",
+                "message": message,
+                "location": self.assistant_location,
+                "weather": weather.to_dict(),
+                "barge_in_enabled": self.speech_barge_in_enabled,
+            }
+        except Exception as exc:
+            payload = {
+                "status": "weather_unavailable",
+                "message": f"{greeting}, sir. ULTRON 2.7 is online. I could not retrieve the Jabalpur weather briefing right now.",
+                "location": self.assistant_location,
+                "weather": None,
+                "weather_error": str(exc),
+                "barge_in_enabled": self.speech_barge_in_enabled,
+            }
+        self._briefing_cache = payload
+        self._briefing_cached_at = now
+        self.last_subtitle = str(payload["message"])
+        return self.snapshot(dict(payload))
+
+    def camera_capture(self, payload: dict[str, Any]) -> dict[str, Any]:
+        data_url = str(payload.get("image") or payload.get("data_url") or "")
+        match = re.fullmatch(r"data:image/(?P<kind>png|jpeg);base64,(?P<data>[A-Za-z0-9+/=\r\n]+)", data_url)
+        if not match:
+            return self.snapshot({"status": "error", "message": "Camera capture did not contain a valid PNG or JPEG image."})
+        try:
+            image = base64.b64decode(match.group("data"), validate=True)
+        except (ValueError, binascii.Error):
+            return self.snapshot({"status": "error", "message": "Camera capture could not be decoded."})
+        if not image or len(image) > 8 * 1024 * 1024:
+            return self.snapshot({"status": "error", "message": "Camera capture is empty or larger than 8 MB."})
+        kind = match.group("kind")
+        signature_ok = image.startswith(b"\x89PNG\r\n\x1a\n") if kind == "png" else image.startswith(b"\xff\xd8\xff")
+        if not signature_ok:
+            return self.snapshot({"status": "error", "message": "Camera image signature did not match its declared format."})
+
+        directory = self.brain.assistant.settings.screenshot_dir.resolve()
+        directory.mkdir(parents=True, exist_ok=True)
+        suffix = ".png" if kind == "png" else ".jpg"
+        path = directory / f"ultron-camera-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}{suffix}"
+        path.write_bytes(image)
+        self.last_subtitle = f"Photo captured and saved as {path.name}, sir."
+        if self.brain.assistant.settings.write_audit:
+            append_audit_record(
+                {"record_type": "camera_capture", "path": str(path), "bytes": len(image)},
+                self.brain.assistant.settings.audit_log,
+            )
+        return self.snapshot({"status": "saved", "message": self.last_subtitle, "filename": path.name, "path": str(path), "bytes": len(image)})
 
     def voice_start(self, *, push_to_talk: bool | None = None) -> dict[str, Any]:
         self.visual_state = "listening"
@@ -179,7 +305,10 @@ class WebState:
     def wake_start(self) -> dict[str, Any]:
         self.visual_state = "waiting_for_wake_word"
         payload = self.voice.start_wake()
-        self.last_subtitle = "Always-listening is on. Say ULTRON or Hey ULTRON."
+        if self.voice.wake_status.wake_provider == "double_clap":
+            self.last_subtitle = "Voice standby. Double clap to wake me."
+        else:
+            self.last_subtitle = "Always-listening is on. Say ULTRON or Hey ULTRON."
         return self.snapshot(payload)
 
     def wake_stop(self) -> dict[str, Any]:
@@ -193,16 +322,26 @@ class WebState:
 
     def wake_process(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.visual_state = "transcribing"
-        wake_payload = self.voice.process_wake_input(payload, lambda goal, confirmed=False: self.command(goal, confirmed=confirmed))
+        if payload.get("capture"):
+            capture_payload = self.voice.capture.capture(payload)
+            if capture_payload.get("status") not in {"ok", "delegated"}:
+                self.last_subtitle = str(capture_payload.get("message", "Backend microphone capture is unavailable."))
+                self.visual_state = "waiting_for_wake_word" if self.voice.wake_status.always_listening else "idle"
+                return self.snapshot(self.voice.snapshot({"status": "capture_unavailable", "capture": capture_payload, "message": self.last_subtitle}))
+            payload = {**payload, **capture_payload}
+        try:
+            wake_payload = self.voice.process_wake_input(payload, lambda goal, confirmed=False: self.command(goal, confirmed=confirmed))
+        finally:
+            self.voice.cleanup_capture(payload)
         status = wake_payload.get("status")
         if status in {"ignored", "inactive"}:
             self.last_subtitle = str(wake_payload.get("message", "Input ignored by wake/VAD gate."))
             self.visual_state = "waiting_for_wake_word" if self.voice.wake_status.always_listening else "idle"
             return self.snapshot(wake_payload)
         if status == "wake_detected":
-            self.last_subtitle = str(wake_payload.get("message", "Wake word detected. Listening."))
+            self.last_subtitle = str(wake_payload.get("spoken_response") or wake_payload.get("message") or "Wake detected. Listening.")
             self.visual_state = "listening"
-            return self.snapshot(wake_payload)
+            return self.snapshot({**wake_payload, "subtitle": self.last_subtitle})
         if wake_payload.get("command_executed"):
             record = wake_payload.get("record", {})
             spoken = str(wake_payload.get("spoken_response", self.last_subtitle))
@@ -279,6 +418,11 @@ class WebState:
             self.voice.set_muted(bool(payload.get("muted")))
         text = str(payload.get("text") or self.last_subtitle or "").strip()
         speech = self.voice.speak(text)
+        audio = speech.get("speech")
+        if isinstance(audio, dict) and audio.get("status") == "audio_stream":
+            stream_id = str(audio.get("stream_id") or "")
+            if re.fullmatch(r"[0-9a-f]{32}", stream_id):
+                audio["stream_url"] = f"/api/voice/audio/{stream_id}"
         self.visual_state = "speaking" if speech.get("voice", {}).get("speaking") else self.visual_state
         return self.snapshot(speech)
 
@@ -360,6 +504,9 @@ def build_state(args: argparse.Namespace) -> WebState:
         knowledge=knowledge,
         skills=SkillRegistry.with_builtins(assistant, knowledge),
         voice=build_voice_session(config),
+        assistant_location=config.assistant_location,
+        startup_briefing_enabled=config.startup_briefing_enabled,
+        speech_barge_in_enabled=config.speech_barge_in_enabled,
     )
 
 
@@ -369,6 +516,10 @@ def make_handler(state: WebState, web_root: Path = WEB_ROOT) -> type[BaseHTTPReq
 
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
+            if parsed.path == "/favicon.ico":
+                self.send_response(204)
+                self.end_headers()
+                return
             if parsed.path == "/api/status":
                 self._json(state.snapshot({"status": "ok"}))
                 return
@@ -406,6 +557,14 @@ def make_handler(state: WebState, web_root: Path = WEB_ROOT) -> type[BaseHTTPReq
                 except ValueError:
                     limit = 25
                 self._json(state.audit_recent(limit=max(1, min(limit, 100))))
+                return
+            if parsed.path == "/api/briefing":
+                query = parse_qs(parsed.query)
+                force = str((query.get("force") or [""])[0]).lower() in {"1", "true", "yes"}
+                self._json(state.startup_briefing(force=force))
+                return
+            if parsed.path.startswith("/api/voice/audio/"):
+                self._stream_voice_audio(parsed.path.rsplit("/", 1)[-1])
                 return
             self._serve_static(parsed.path)
 
@@ -446,6 +605,15 @@ def make_handler(state: WebState, web_root: Path = WEB_ROOT) -> type[BaseHTTPReq
             if parsed.path == "/api/voice/test-tts":
                 self._json(state.voice_test_tts(body))
                 return
+            if parsed.path == "/api/research":
+                self._json(state.research(str(body.get("query") or "")))
+                return
+            if parsed.path == "/api/model/generate":
+                self._json(state.model_generate(str(body.get("description") or body.get("prompt") or "")))
+                return
+            if parsed.path == "/api/camera/capture":
+                self._json(state.camera_capture(body))
+                return
             if parsed.path == "/api/voice/calibrate":
                 self._json(state.voice_calibrate(body))
                 return
@@ -481,7 +649,7 @@ def make_handler(state: WebState, web_root: Path = WEB_ROOT) -> type[BaseHTTPReq
 
         def _read_json(self) -> dict[str, Any]:
             length = int(self.headers.get("Content-Length", "0") or "0")
-            if length <= 0:
+            if length <= 0 or length > 12 * 1024 * 1024:
                 return {}
             try:
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -495,7 +663,44 @@ def make_handler(state: WebState, web_root: Path = WEB_ROOT) -> type[BaseHTTPReq
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
-            self.wfile.write(data)
+            try:
+                self.wfile.write(data)
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                return
+
+        def _stream_voice_audio(self, stream_id: str) -> None:
+            if not re.fullmatch(r"[0-9a-f]{32}", stream_id):
+                self._json({"status": "not_found", "message": "Unknown speech stream."}, status=404)
+                return
+            try:
+                upstream = state.voice.open_tts_stream(stream_id)
+            except KeyError:
+                self._json({"status": "not_found", "message": "Unknown or expired speech stream."}, status=404)
+                return
+            except RuntimeError:
+                self._json({"status": "unavailable", "message": "Neural speech is temporarily unavailable."}, status=502)
+                return
+
+            try:
+                with upstream as response:
+                    content_type = str(response.headers.get("Content-Type") or "audio/mpeg").split(";", 1)[0]
+                    content_length = str(response.headers.get("Content-Length") or "")
+                    read_chunk = getattr(response, "read1", response.read)
+                    self.send_response(200)
+                    self.send_header("Content-Type", content_type)
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("X-Content-Type-Options", "nosniff")
+                    if content_length.isdigit():
+                        self.send_header("Content-Length", content_length)
+                    self.end_headers()
+                    while True:
+                        chunk = read_chunk(8 * 1024)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                return
 
         def _serve_static(self, request_path: str) -> None:
             if request_path in {"", "/"}:
@@ -520,10 +725,177 @@ def make_handler(state: WebState, web_root: Path = WEB_ROOT) -> type[BaseHTTPReq
             self.send_response(200)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-cache, must-revalidate")
             self.end_headers()
             self.wfile.write(data)
 
     return Handler
+
+
+def _interface_request(command: str) -> tuple[str, dict[str, Any]] | None:
+    lowered = " ".join(command.lower().strip().split())
+    gesture_guide = bool(
+        re.search(r"\b(?:open|show|display|teach|explain)\b.*\b(?:hand|gesture)\b.*\b(?:guide|controls?|mapping|instructions?)\b", lowered)
+        or re.search(r"\bwhat\s+(?:hand\s+)?gestures?\s+(?:can\s+i\s+use|are\s+available)\b", lowered)
+    )
+    if gesture_guide:
+        return "Opening the hand gesture guide, sir.", {"kind": "gestures", "action": "guide"}
+
+    pauses_gestures = bool(re.search(r"\b(?:pause|hold|freeze)\b.*\b(?:hand|gesture|cursor|mouse)\b", lowered))
+    if pauses_gestures:
+        return "Desktop hand control paused, sir.", {"kind": "gestures", "action": "pause"}
+
+    resumes_gestures = bool(re.search(r"\b(?:resume|continue|unpause)\b.*\b(?:hand|gesture|cursor|mouse)\b", lowered))
+    if resumes_gestures:
+        return "Desktop hand control resumed, sir.", {"kind": "gestures", "action": "resume"}
+
+    disables_gestures = bool(
+        re.search(r"\b(?:disable|stop|turn\s+off|close)\s+(?:the\s+)?(?:hand(?:\s+gesture)?|gesture)\s+(?:controls?|tracking|mode)\b", lowered)
+    )
+    if disables_gestures:
+        return "Hand controls are off, sir.", {"kind": "gestures", "action": "stop"}
+
+    enables_gestures = bool(
+        re.search(r"\b(?:enable|start|turn\s+on|open|use)\s+(?:the\s+)?(?:hand(?:\s+gesture)?|gesture)\s+(?:controls?|tracking|mode)\b", lowered)
+        or re.search(r"\b(?:move|control)\s+(?:the\s+)?(?:windows?|tabs?|panels?)\s+with\s+(?:my\s+)?hand\b", lowered)
+        or re.search(r"\b(?:move|control|use)\s+(?:the\s+)?(?:mouse|cursor|pointer|laptop|computer|screen|desktop)\b.*\b(?:with|using)\s+(?:my\s+)?hand\b", lowered)
+    )
+    if enables_gestures:
+        desktop_mode = bool(re.search(r"\b(?:mouse|cursor|pointer|laptop|computer|whole\s+screen|desktop)\b", lowered))
+        directive: dict[str, Any] = {"kind": "gestures", "action": "start"}
+        if desktop_mode:
+            directive["mode"] = "desktop"
+        return "Hand controls are coming online, sir.", directive
+
+    model_controls = (
+        (r"(?:\b(?:enlarge|scale\s+up)\s+(?:it|this|that)\b|\b(?:enlarge|increase|scale\s+up|make\s+(?:it|the\s+model)\s+bigger|zoom\s+in)\b.*\b(?:model|object|mesh)\b)", "scale_up", "Enlarging the 3D model, sir."),
+        (r"(?:\b(?:diminish|shrink|scale\s+down)\s+(?:it|this|that)\b|\b(?:diminish|shrink|reduce|scale\s+down|make\s+(?:it|the\s+model)\s+smaller|zoom\s+out)\b.*\b(?:model|object|mesh)\b)", "scale_down", "Reducing the 3D model, sir."),
+        (r"(?:\bvanish\s+(?:it|this|that)\b|\b(?:hide|vanish|make\s+invisible)\b.*\b(?:model|object|mesh)\b)", "hide", "The 3D model is hidden, sir."),
+        (r"\b(?:show|restore|reappear|make\s+visible)\b.*\b(?:model|object|mesh)\b", "show", "The 3D model is visible, sir."),
+        (r"\b(?:remove|delete|clear)\b.*\b(?:3d\s+)?(?:model|mesh)\b", "clear", "The 3D model has been cleared, sir."),
+        (r"\breset\b.*\b(?:3d\s+)?(?:model|view|mesh)\b", "reset", "The 3D view is reset, sir."),
+    )
+    for pattern, action, message in model_controls:
+        if re.search(pattern, lowered):
+            return message, {"kind": "modeler", "action": action}
+
+    scan_360 = bool(
+        re.search(r"\b(?:scan|capture|model|reconstruct)\b.*\b360(?:\s*degree)?\b", lowered)
+        or re.search(r"\b360(?:\s*degree)?\b.*\b(?:scan|model|reconstruction)\b", lowered)
+    )
+    if scan_360:
+        target = _scan_target(command)
+        return (
+            f"Starting a 360-degree object scan{f' for {target}' if target else ''}, sir.",
+            {"kind": "modeler", "action": "scan_360", "target": target, "required_views": 12},
+        )
+
+    camera_object_scan = bool(
+        re.search(
+            r"\bscan\b.*\b(?:bottle|cup|vase|can|book|phone|chair|shoe|object|item|thing)\b",
+            lowered,
+        )
+    )
+    if camera_object_scan:
+        target = _scan_target(command)
+        return (
+            f"I will isolate {target or 'the object'} from the camera frame, sir.",
+            {"kind": "modeler", "action": "scan_object", "target": target, "fallback_360": True},
+        )
+
+    model_intent = bool(
+        re.search(r"\b(?:make|create|build|generate|design|turn)\b.*\b3d\s+(?:model|mesh|relief)\b", lowered)
+        or re.search(r"\b(?:open|show|start)\s+(?:the\s+)?(?:3d\s+)?(?:designer|modeler|modeller)\b", lowered)
+    )
+    if model_intent:
+        description = _model_description(command)
+        camera_reference = bool(
+            re.search(
+                r"\b(?:this|it|the\s+object|object\s+in\s+(?:the\s+)?camera|what\s+i(?:'m|\s+am)\s+(?:holding|showing)|camera\s+object)\b",
+                lowered,
+            )
+            or re.search(r"\bfrom\s+(?:the\s+)?camera\b", lowered)
+        )
+        if camera_reference:
+            target = _scan_target(command)
+            return (
+                f"I will isolate {target or 'the object'} from the camera frame and reconstruct only that object, sir.",
+                {"kind": "modeler", "action": "scan_object", "target": target, "fallback_360": True},
+            )
+        if description:
+            return (
+                f"Building a manipulable 3D {description}, sir.",
+                {"kind": "modeler", "action": "generate", "description": description},
+            )
+        return "3D designer ready, sir.", {"kind": "modeler", "action": "open"}
+
+    opens_camera = bool(re.search(r"\b(?:open|show|start|launch)\s+(?:the\s+)?camera\b", lowered))
+    takes_photo = bool(re.search(r"\b(?:take|capture|click)\s+(?:a\s+)?(?:photo|picture|selfie)\b", lowered))
+    if opens_camera or takes_photo:
+        message = "Camera console ready, sir." if not takes_photo else "Camera ready. I will frame the shot in ULTRON, sir."
+        return message, {"kind": "camera", "action": "open", "auto_capture": takes_photo}
+
+    browser_only = re.fullmatch(
+        r"(?:please\s+)?(?:open|show|launch|start)\s+(?:the\s+)?(?:web\s+)?(?:browser|research\s+console|internet)(?:\s+in\s+ultron)?[.!]?",
+        lowered,
+    )
+    if browser_only:
+        return "Research console ready, sir. What should I look into?", {"kind": "research", "action": "open", "query": "", "answer": "", "results": []}
+    return None
+
+
+def _model_description(command: str) -> str:
+    patterns = (
+        r"\b(?:make|create|build|generate|design)\s+(?:me\s+)?(?:an?\s+)?3d\s+(?:model|mesh)\s+(?:of\s+)?(?P<description>.+)$",
+        r"\bturn\s+(?P<description>.+?)\s+into\s+(?:an?\s+)?3d\s+(?:model|mesh)$",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, command, flags=re.IGNORECASE)
+        if not match:
+            continue
+        description = re.sub(r"^(?:an?|the)\s+", "", match.group("description").strip(" .?!"), flags=re.IGNORECASE)
+        if description.lower() not in {"this", "it", "this object", "the object"}:
+            return description[:180]
+    return ""
+
+
+def _scan_target(command: str) -> str:
+    match = re.search(
+        r"\b(?:this|the)\s+(?P<target>bottle|cup|vase|can|book|phone|chair|shoe|object|item|thing)\b",
+        command,
+        flags=re.IGNORECASE,
+    )
+    if match and match.group("target").lower() not in {"object", "item", "thing"}:
+        return match.group("target").lower()
+    return ""
+
+
+def _research_directive(task: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(task, dict):
+        return None
+    for step in task.get("steps") or []:
+        result = step.get("result") if isinstance(step, dict) else None
+        data = result.get("data") if isinstance(result, dict) else None
+        web = data.get("web") if isinstance(data, dict) else None
+        if isinstance(web, dict):
+            return {
+                "kind": "research",
+                "action": "show",
+                "query": str(web.get("query") or ""),
+                "answer": str(web.get("answer") or ""),
+                "results": web.get("results") if isinstance(web.get("results"), list) else [],
+                "status": str(web.get("status") or "unknown"),
+                "synthesized": bool(web.get("synthesized", False)),
+            }
+    return None
+
+
+def _time_greeting(hour: int) -> str:
+    if hour < 12:
+        return "Good morning"
+    if hour < 17:
+        return "Good afternoon"
+    return "Good evening"
 
 
 def serve(args: argparse.Namespace) -> ThreadingHTTPServer:

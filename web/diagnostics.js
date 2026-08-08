@@ -7,6 +7,7 @@ const voiceList = document.getElementById("voiceList");
 const safeRootsList = document.getElementById("safeRootsList");
 const errorsList = document.getElementById("errorsList");
 
+window.lucide?.createIcons({ attrs: { "aria-hidden": "true" } });
 refreshButton.addEventListener("click", loadDiagnostics);
 loadDiagnostics();
 

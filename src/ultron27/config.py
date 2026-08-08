@@ -24,6 +24,8 @@ class UltronConfig:
     workspace: Path = Path(".")
     safe_roots: tuple[Path, ...] = (Path("."),)
     app_aliases: dict[str, str] | None = None
+    whatsapp_contacts: dict[str, str] | None = None
+    whatsapp_require_confirmation: bool = True
     screenshot_dir: Path = Path(".ultron/screenshots")
     planner_mode: str = "rules"
     llm_provider: str = "ollama"
@@ -39,15 +41,20 @@ class UltronConfig:
     voice_capture_seconds: float = 4.0
     voice_tts_provider: str = "browser_speech_synthesis"
     voice_stt_model: str | None = None
+    voice_tts_model: str | None = "aura-2-orion-en"
+    voice_stt_language: str = "multi"
+    voice_stt_keyterms: tuple[str, ...] = ("ULTRON", "WhatsApp", "Spotify")
     voice_stt_model_path: Path | None = None
     voice_tts_model_path: Path | None = None
     voice_tts_voice_path: Path | None = None
     voice_device: str = "cpu"
     voice_identity: str = "ULTRON"
-    voice_rate: float = 0.94
-    voice_pitch: float = 0.86
-    voice_volume: float = 0.95
+    voice_preference: str = "Microsoft George"
+    voice_rate: float = 1.03
+    voice_pitch: float = 1.0
+    voice_volume: float = 1.0
     wake_word_provider: str = "text"
+    wake_auto_start: bool = False
     wake_phrases: tuple[str, ...] = ("ultron", "hey ultron")
     wake_model_path: Path | None = None
     vad_provider: str = "energy"
@@ -60,6 +67,9 @@ class UltronConfig:
     clap_retrigger_ratio: float = 0.55
     clap_noise_floor_alpha: float = 0.992
     clap_quiet_gate_mult: float = 2.2
+    startup_briefing_enabled: bool = True
+    assistant_location: str = "Jabalpur"
+    speech_barge_in_enabled: bool = True
 
 
 def load_config(
@@ -115,6 +125,10 @@ def _merge_json_config(config: UltronConfig, path: Path) -> UltronConfig:
         updates["safe_roots"] = tuple(_resolve_path(Path(item), base) for item in _expect_string_list(raw, "safe_roots"))
     if "app_aliases" in raw:
         updates["app_aliases"] = _expect_string_mapping(raw, "app_aliases")
+    if "whatsapp_contacts" in raw:
+        updates["whatsapp_contacts"] = _expect_string_mapping(raw, "whatsapp_contacts")
+    if "whatsapp_require_confirmation" in raw:
+        updates["whatsapp_require_confirmation"] = _expect_bool(raw, "whatsapp_require_confirmation")
     if "screenshot_dir" in raw:
         updates["screenshot_dir"] = _resolve_path(_expect_string(raw, "screenshot_dir"), base)
     if "planner_mode" in raw:
@@ -150,11 +164,18 @@ def _merge_json_config(config: UltronConfig, path: Path) -> UltronConfig:
         updates["voice_tts_provider"] = _expect_choice(
             raw,
             "voice_tts_provider",
-            {"browser_speech_synthesis", "browser", "piper", "pyttsx3", "mock"},
+            {"browser_speech_synthesis", "browser", "deepgram", "piper", "pyttsx3", "mock"},
         )
     if "voice_stt_model" in raw:
         value = raw["voice_stt_model"]
         updates["voice_stt_model"] = None if value is None or value == "" else _expect_plain_string(raw, "voice_stt_model")
+    if "voice_tts_model" in raw:
+        value = raw["voice_tts_model"]
+        updates["voice_tts_model"] = None if value is None or value == "" else _expect_plain_string(raw, "voice_tts_model")
+    if "voice_stt_language" in raw:
+        updates["voice_stt_language"] = _expect_plain_string(raw, "voice_stt_language").strip() or "multi"
+    if "voice_stt_keyterms" in raw:
+        updates["voice_stt_keyterms"] = tuple(_expect_string_list(raw, "voice_stt_keyterms"))
     if "voice_stt_model_path" in raw:
         updates["voice_stt_model_path"] = _resolve_optional_path(raw, "voice_stt_model_path", base)
     if "voice_tts_model_path" in raw:
@@ -165,6 +186,8 @@ def _merge_json_config(config: UltronConfig, path: Path) -> UltronConfig:
         updates["voice_device"] = _expect_choice(raw, "voice_device", {"cpu", "cuda", "auto"})
     if "voice_identity" in raw:
         updates["voice_identity"] = _expect_plain_string(raw, "voice_identity")
+    if "voice_preference" in raw:
+        updates["voice_preference"] = _expect_plain_string(raw, "voice_preference")
     if "voice_rate" in raw:
         updates["voice_rate"] = _expect_number(raw, "voice_rate")
     if "voice_pitch" in raw:
@@ -173,6 +196,8 @@ def _merge_json_config(config: UltronConfig, path: Path) -> UltronConfig:
         updates["voice_volume"] = _expect_number(raw, "voice_volume")
     if "wake_word_provider" in raw:
         updates["wake_word_provider"] = _expect_choice(raw, "wake_word_provider", {"text", "openwakeword", "double_clap", "mock"})
+    if "wake_auto_start" in raw:
+        updates["wake_auto_start"] = _expect_bool(raw, "wake_auto_start")
     if "wake_phrases" in raw:
         updates["wake_phrases"] = tuple(_expect_string_list(raw, "wake_phrases"))
     if "wake_model_path" in raw:
@@ -197,6 +222,12 @@ def _merge_json_config(config: UltronConfig, path: Path) -> UltronConfig:
         updates["clap_noise_floor_alpha"] = _expect_number(raw, "clap_noise_floor_alpha")
     if "clap_quiet_gate_mult" in raw:
         updates["clap_quiet_gate_mult"] = _expect_number(raw, "clap_quiet_gate_mult")
+    if "startup_briefing_enabled" in raw:
+        updates["startup_briefing_enabled"] = _expect_bool(raw, "startup_briefing_enabled")
+    if "assistant_location" in raw:
+        updates["assistant_location"] = _expect_plain_string(raw, "assistant_location").strip() or "Jabalpur"
+    if "speech_barge_in_enabled" in raw:
+        updates["speech_barge_in_enabled"] = _expect_bool(raw, "speech_barge_in_enabled")
     return replace(config, **updates)
 
 
@@ -212,6 +243,10 @@ def _merge_env_config(config: UltronConfig, env: Mapping[str, str], base_dir: Pa
         updates["workspace"] = _resolve_path(Path(env["ULTRON_WORKSPACE"]), base_dir)
     if "ULTRON_SAFE_ROOTS" in env:
         updates["safe_roots"] = tuple(_resolve_path(Path(item.strip()), base_dir) for item in env["ULTRON_SAFE_ROOTS"].split(";") if item.strip())
+    if "ULTRON_WHATSAPP_CONTACTS" in env:
+        updates["whatsapp_contacts"] = _parse_string_mapping_json(env["ULTRON_WHATSAPP_CONTACTS"], "ULTRON_WHATSAPP_CONTACTS")
+    if "ULTRON_WHATSAPP_REQUIRE_CONFIRMATION" in env:
+        updates["whatsapp_require_confirmation"] = parse_bool(env["ULTRON_WHATSAPP_REQUIRE_CONFIRMATION"])
     if "ULTRON_SCREENSHOT_DIR" in env:
         updates["screenshot_dir"] = _resolve_path(Path(env["ULTRON_SCREENSHOT_DIR"]), base_dir)
     if "ULTRON_PLANNER_MODE" in env:
@@ -246,10 +281,16 @@ def _merge_env_config(config: UltronConfig, env: Mapping[str, str], base_dir: Pa
         updates["voice_tts_provider"] = _parse_choice(
             env["ULTRON_TTS_PROVIDER"],
             "ULTRON_TTS_PROVIDER",
-            {"browser_speech_synthesis", "browser", "piper", "pyttsx3", "mock"},
+            {"browser_speech_synthesis", "browser", "deepgram", "piper", "pyttsx3", "mock"},
         )
     if "ULTRON_STT_MODEL" in env:
         updates["voice_stt_model"] = env["ULTRON_STT_MODEL"]
+    if "ULTRON_TTS_MODEL" in env:
+        updates["voice_tts_model"] = env["ULTRON_TTS_MODEL"]
+    if "ULTRON_STT_LANGUAGE" in env:
+        updates["voice_stt_language"] = env["ULTRON_STT_LANGUAGE"].strip() or "multi"
+    if "ULTRON_STT_KEYTERMS" in env:
+        updates["voice_stt_keyterms"] = tuple(item.strip() for item in env["ULTRON_STT_KEYTERMS"].split(";") if item.strip())
     if "ULTRON_STT_MODEL_PATH" in env:
         updates["voice_stt_model_path"] = _resolve_path(Path(env["ULTRON_STT_MODEL_PATH"]), base_dir)
     if "ULTRON_TTS_MODEL_PATH" in env:
@@ -260,6 +301,8 @@ def _merge_env_config(config: UltronConfig, env: Mapping[str, str], base_dir: Pa
         updates["voice_device"] = _parse_choice(env["ULTRON_VOICE_DEVICE"], "ULTRON_VOICE_DEVICE", {"cpu", "cuda", "auto"})
     if "ULTRON_VOICE_IDENTITY" in env:
         updates["voice_identity"] = env["ULTRON_VOICE_IDENTITY"]
+    if "ULTRON_VOICE_PREFERENCE" in env:
+        updates["voice_preference"] = env["ULTRON_VOICE_PREFERENCE"]
     if "ULTRON_VOICE_RATE" in env:
         updates["voice_rate"] = float(env["ULTRON_VOICE_RATE"])
     if "ULTRON_VOICE_PITCH" in env:
@@ -268,6 +311,8 @@ def _merge_env_config(config: UltronConfig, env: Mapping[str, str], base_dir: Pa
         updates["voice_volume"] = float(env["ULTRON_VOICE_VOLUME"])
     if "ULTRON_WAKE_WORD_PROVIDER" in env:
         updates["wake_word_provider"] = _parse_choice(env["ULTRON_WAKE_WORD_PROVIDER"], "ULTRON_WAKE_WORD_PROVIDER", {"text", "openwakeword", "double_clap", "mock"})
+    if "ULTRON_WAKE_AUTO_START" in env:
+        updates["wake_auto_start"] = parse_bool(env["ULTRON_WAKE_AUTO_START"])
     if "ULTRON_WAKE_PHRASES" in env:
         updates["wake_phrases"] = tuple(item.strip() for item in env["ULTRON_WAKE_PHRASES"].split(";") if item.strip())
     if "ULTRON_WAKE_MODEL_PATH" in env:
@@ -292,6 +337,12 @@ def _merge_env_config(config: UltronConfig, env: Mapping[str, str], base_dir: Pa
         updates["clap_noise_floor_alpha"] = float(env["ULTRON_CLAP_NOISE_FLOOR_ALPHA"])
     if "ULTRON_CLAP_QUIET_GATE_MULT" in env:
         updates["clap_quiet_gate_mult"] = float(env["ULTRON_CLAP_QUIET_GATE_MULT"])
+    if "ULTRON_STARTUP_BRIEFING_ENABLED" in env:
+        updates["startup_briefing_enabled"] = parse_bool(env["ULTRON_STARTUP_BRIEFING_ENABLED"])
+    if "ULTRON_LOCATION" in env:
+        updates["assistant_location"] = env["ULTRON_LOCATION"].strip() or "Jabalpur"
+    if "ULTRON_SPEECH_BARGE_IN_ENABLED" in env:
+        updates["speech_barge_in_enabled"] = parse_bool(env["ULTRON_SPEECH_BARGE_IN_ENABLED"])
     return replace(config, **updates)
 
 
@@ -353,6 +404,16 @@ def _expect_string_mapping(raw: dict[str, object], key: str) -> dict[str, str]:
     if not isinstance(value, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()):
         raise ValueError(f"{key} must be an object with string keys and values")
     return dict(value)
+
+
+def _parse_string_mapping_json(value: str, key: str) -> dict[str, str]:
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{key} must be a JSON object with string keys and values") from exc
+    if not isinstance(payload, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in payload.items()):
+        raise ValueError(f"{key} must be a JSON object with string keys and values")
+    return dict(payload)
 
 
 def _expect_choice(raw: dict[str, object], key: str, allowed: set[str]) -> str:

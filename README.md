@@ -1,16 +1,16 @@
 # ULTRON 2.7
 
-ULTRON 2.7 is a local-first Jarvis-style laptop assistant MVP. It turns natural-language commands into typed tool calls, validates them, applies a safety policy, and executes them only through an allowlisted tool layer.
+ULTRON 2.7 is a local-first Jarvis-style desktop assistant. It turns natural-language commands into typed tool calls, validates them, applies a safety policy, and executes them only through an allowlisted tool layer.
 
 The repo is built around the supplied research paper and synthetic laptop-command dataset. The current implementation keeps command planning, voice input, policy, and execution separated so ULTRON can grow toward a Jarvis-style assistant without giving any model raw shell access.
 
 ## What Works Now
 
 - Dataset-backed command planner with fuzzy matching and regex fallbacks.
-- Typed tool registry for laptop actions such as app launch, volume, brightness, files, reminders, notes, email drafts, and smart-home placeholders.
+- Typed tool registry for app control, media, websites, local system status, calculations, files, reminders, notes, email drafts, and provider-backed messaging/music.
 - Safety policy with low, medium, high, and blocked risk handling.
 - Dry-run executor by default, so model/tool output can be tested without changing the computer.
-- Real low-risk execution for notes, reminders, timers, safe file search, safe file/folder opening, app launching, clipboard helpers, and screenshot capture where supported.
+- Real Windows execution for app launch/focus/graceful close, absolute and relative volume/brightness, mute/unmute, media keys, websites, notes, reminders, timer notifications, approved file search/open/create/move/rename, clipboard helpers, screenshots, calculations, and local time/date/battery/storage/system status.
 - Configurable safe roots and app aliases for laptop-specific behavior.
 - JSONL audit logging for every command.
 - Dataset evaluation script for tool-name, argument, and confirmation-gate accuracy.
@@ -21,9 +21,10 @@ The repo is built around the supplied research paper and synthetic laptop-comman
 - Agentic brain layer for multi-step task planning, safe execution, and non-sensitive memory.
 - Conversation manager with fast chat routing, clarification behavior, and a consistent calm assistant personality.
 - Optional PyTorch neural intent-router training path using the 50,000-example ULTRON synthetic dataset.
-- Cyberpunk green plasma-sphere web interface backed by the local brain/runtime API.
+- Native Windows desktop application with a persistent WebView2 profile, backed by the local brain/runtime API.
+- Browser-hosted development interface using the same cyberpunk green command center.
 - Voice mode with transcript cleanup, confidence handling, speech synthesis, transcript history, mute, push-to-talk, and confirmation controls.
-- Offline-first voice provider layer with faster-whisper, whisper.cpp, Piper, and pyttsx3 adapters plus browser/mock fallbacks.
+- Voice provider layer with Deepgram Nova-3 STT, Aura-2 neural TTS, faster-whisper, whisper.cpp, Piper, and Windows/browser fallbacks.
 - Wake-word and voice activity gates for always-listening mode, with push-to-talk still available.
 - Backend microphone capture abstraction with sounddevice/mock/browser capture providers and voice diagnostics.
 - Semantic LLM intent routing through Ollama or Groq, with strict typed JSON validation and clarification fallback.
@@ -36,8 +37,9 @@ The repo is built around the supplied research paper and synthetic laptop-comman
 
 ```text
 src/ultron27/            Assistant package
-web/                     Phase 7 visual interface
+web/                     Desktop and browser visual interface
 scripts/                 Utility scripts
+assets/                  Windows application icon
 tests/                   Safety and planner tests
 data/jarvis_dataset_v2/  Supplied synthetic command dataset
 docs/                    Supplied research paper and architecture notes
@@ -48,9 +50,15 @@ docs/                    Supplied research paper and architecture notes
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -e .[dev]
+pip install -e .[dev,desktop,windows]
+ultron-desktop
 ultron "set volume to 40 percent"
+ultron "turn the volume up by 10 percent"
+ultron "unmute the sound"
 ultron "open notepad"
+ultron "open YouTube"
+ultron "what is 15 percent of 200"
+ultron "how much battery is left"
 ultron "search the web for Python speech recognition"
 ultron "play lofi beats on Spotify"
 ultron "hello ultron" --text
@@ -73,6 +81,67 @@ python scripts/demo_phase13.py
 python scripts/verify_phase13.py
 python -m unittest discover -s tests
 ```
+
+## Desktop Application
+
+The recommended Windows setup now installs the native desktop runtime and creates an `ULTRON 2.7` shortcut on the desktop:
+
+```powershell
+.\scripts\setup_ultron_windows.ps1
+```
+
+Launch the native app from the shortcut or directly:
+
+```powershell
+.\.venv\Scripts\ultron-desktop.exe
+```
+
+ULTRON opens in its own resizable Windows window with native minimize, maximize, Alt+Tab, and close behavior. Its camera, research, and 3D-model windows remain movable workspaces inside the application. WebView state and permissions persist under `%LOCALAPPDATA%\ULTRON 2.7\webview`; source launches continue to use the repo's `ultron.config.json`.
+
+Build a distributable application directory with:
+
+```powershell
+.\scripts\build_ultron_desktop.ps1
+```
+
+The resulting executable is `%LOCALAPPDATA%\ULTRON 2.7\desktop-build\dist\ULTRON 2.7\ULTRON 2.7.exe`. Keeping disposable build output outside the OneDrive checkout prevents sync-provider file locks. Pass `-OutputRoot .\dist` when building from a non-synced checkout and repo-local output is preferred. The build uses an `onedir` layout so startup stays fast and the bundled UI/data files remain inspectable. `ultron-ui` and `python scripts\launch_ultron.py --open` remain available for browser-based development.
+
+### Whole-desktop hand control
+
+The packaged Windows application can turn the camera hand tracker into system-wide mouse and touchpad input. Open **System**, find **Hand control**, select **Desktop**, and press **Start**. The book icon opens the complete gesture map inside ULTRON.
+
+- index finger: move the cursor; thumb-index pinch: left click, double-click, or hold to drag,
+- thumb-middle pinch: right click; thumb-ring pinch: middle click,
+- two raised fingers: vertical/horizontal scroll; change their spread to zoom,
+- three-finger swipe down/up: show the desktop or restore minimized windows,
+- three-finger swipe left/right: switch apps,
+- four-finger swipe left/right: switch virtual desktops; four-finger swipe up: Task View,
+- little-finger swipe left/right: browser back or forward,
+- hold a fist for one second: pause or resume hand input.
+
+Press `Ctrl+Alt+H` at any time for the native emergency stop. Input also pauses and releases any held mouse button when the tracked hand disappears. Whole-desktop mode is deliberately available only through the trusted PyWebView desktop bridge; the ordinary browser interface keeps it disabled. Windows can reject synthetic input aimed at a process running with higher privileges, so run ULTRON at the same privilege level as the application being controlled.
+
+Natural command examples:
+
+```text
+open Settings
+switch to Spotify
+close Notepad
+increase brightness by 20 percent
+pause the music
+play the next song
+search YouTube for Python tutorials
+find PDF files in Downloads
+create a folder called invoices in Documents
+rename report.txt to final_report.txt
+move final_report.txt to Documents
+create a note called groceries with milk and eggs
+start a timer for 10 minutes
+draft an email to alex@example.com about the report
+WhatsApp, Em Hitansh, hi
+```
+
+Closing apps, moving or renaming files, opening email drafts, locking the PC, and other medium/high-risk actions remain confirmation-gated. WhatsApp confirmation is controlled separately by `whatsapp_require_confirmation`; your local config can opt into immediate exact-contact sending.
 
 ## Optional Neural Router
 
@@ -142,15 +211,18 @@ ULTRON looks for `ultron.config.json` first, then `.ultron/config.json`. You can
   "voice_sample_rate": 16000,
   "voice_capture_seconds": 4,
   "voice_tts_provider": "browser_speech_synthesis",
+  "voice_tts_model": "aura-2-orion-en",
   "voice_stt_model_path": null,
   "voice_tts_model_path": null,
   "voice_tts_voice_path": null,
   "voice_device": "cpu",
   "voice_identity": "ULTRON",
-  "voice_rate": 0.94,
-  "voice_pitch": 0.86,
-  "voice_volume": 0.95,
+  "voice_preference": "Microsoft George",
+  "voice_rate": 1.03,
+  "voice_pitch": 1.0,
+  "voice_volume": 1.0,
   "wake_word_provider": "text",
+  "wake_auto_start": false,
   "wake_phrases": ["ULTRON", "Hey ULTRON"],
   "wake_model_path": null,
   "vad_provider": "energy",
@@ -159,7 +231,10 @@ ULTRON looks for `ultron.config.json` first, then `.ultron/config.json`. You can
   "clap_min_rms": 0.012,
   "clap_min_gap_s": 0.05,
   "clap_max_gap_s": 0.35,
-  "clap_cooldown_s": 0.45
+  "clap_cooldown_s": 0.45,
+  "startup_briefing_enabled": true,
+  "assistant_location": "Jabalpur",
+  "speech_barge_in_enabled": true
 }
 ```
 
@@ -174,11 +249,17 @@ $env:ULTRON_LLM_PROVIDER = "ollama"
 $env:ULTRON_LLM_MODEL = "qwen2.5:7b-instruct"
 $env:ULTRON_LLM_ENDPOINT = "http://localhost:11434"
 $env:ULTRON_STT_PROVIDER = "browser"
+$env:ULTRON_STT_LANGUAGE = "multi"
+$env:ULTRON_STT_KEYTERMS = "ULTRON;WhatsApp;Spotify;Em Hitansh"
+$env:ULTRON_STARTUP_BRIEFING_ENABLED = "true"
+$env:ULTRON_LOCATION = "Jabalpur"
+$env:ULTRON_SPEECH_BARGE_IN_ENABLED = "true"
 $env:ULTRON_CAPTURE_PROVIDER = "browser"
 $env:ULTRON_MICROPHONE_DEVICE = ""
 $env:ULTRON_VOICE_SAMPLE_RATE = "16000"
 $env:ULTRON_VOICE_CAPTURE_SECONDS = "4"
 $env:ULTRON_TTS_PROVIDER = "browser_speech_synthesis"
+$env:ULTRON_TTS_MODEL = "aura-2-orion-en"
 $env:ULTRON_STT_MODEL_PATH = ".ultron/models/whisper"
 $env:ULTRON_TTS_MODEL_PATH = ".ultron/models/piper.onnx"
 $env:ULTRON_TTS_VOICE_PATH = ".ultron/models/piper.json"
@@ -190,7 +271,7 @@ $env:ULTRON_VAD_PROVIDER = "energy"
 $env:ULTRON_VAD_ENERGY_THRESHOLD = "0.015"
 ```
 
-For the cloud-backed setup, use Groq for planning and Deepgram for speech-to-text:
+For the cloud-backed setup, use Groq for planning and Deepgram for speech recognition and natural Aura-2 speech:
 
 ```powershell
 [Environment]::SetEnvironmentVariable("GROQ_API_KEY", "your-groq-key", "User")
@@ -200,7 +281,36 @@ $env:ULTRON_LLM_MODEL = "openai/gpt-oss-20b"
 $env:ULTRON_LLM_ENDPOINT = "https://api.groq.com/openai/v1"
 $env:ULTRON_STT_PROVIDER = "deepgram"
 $env:ULTRON_STT_MODEL = "nova-3"
+$env:ULTRON_STT_LANGUAGE = "multi"
+$env:ULTRON_STT_KEYTERMS = "ULTRON;WhatsApp;Spotify;Em Hitansh"
+$env:ULTRON_TTS_PROVIDER = "deepgram"
+$env:ULTRON_TTS_MODEL = "aura-2-orion-en"
+$env:ULTRON_VOICE_RATE = "1.03"
 ```
+
+For Hinglish or other English/Hindi code-switching, use Deepgram Nova-3 with `voice_stt_language` set to `multi`. Add uncommon contact names and product terms to `voice_stt_keyterms`; ULTRON sends them as repeated Nova-3 keyterm hints and also uses them to repair close transcript spellings locally.
+
+Aura-2 replies are relayed through a short-lived local stream. Playback can begin as soon as Deepgram returns the first audio instead of waiting for the complete MP3 to be generated, downloaded, and encoded.
+
+For reliable Spotify Premium playback, create a Spotify Developer app, add this redirect URI to it, then authorize ULTRON:
+
+```powershell
+[Environment]::SetEnvironmentVariable("SPOTIFY_CLIENT_ID", "your-spotify-client-id", "User")
+python scripts/spotify_auth.py
+```
+
+The redirect URI is `http://127.0.0.1:8766/callback`. You can also run `python scripts/spotify_auth.py --client-id your-spotify-client-id`; the PKCE login stores the public client ID with the local token. ULTRON uses the Spotify Web API first and targets an available Spotify Connect device. If authorization is missing, the Windows fallback searches the exact query and only reports success after it finds and clicks the visible Play button.
+
+For the most deterministic WhatsApp sending, you can add contact-to-number mappings to `ultron.config.json`. Use international numbers with country code:
+
+```json
+"whatsapp_contacts": {
+  "mom": "+919876543210",
+  "project lead": "+15551234567"
+}
+```
+
+You can also use the exact saved WhatsApp contact name without a number mapping, for example `WhatsApp, Em Hitansh, Hi`. WhatsApp sending requires confirmation by default. Set `"whatsapp_require_confirmation": false` in your local `ultron.config.json` (or `ULTRON_WHATSAPP_REQUIRE_CONFIRMATION=false`) to send immediately after a valid command. For saved names, ULTRON opens WhatsApp when needed, waits for its chat interface, selects a candidate only when the active chat header exactly matches the requested name, refuses to overwrite existing drafts, verifies the exact message in the composer, presses Send once, and checks that the composer cleared.
 
 Useful CLI flags:
 
@@ -220,7 +330,9 @@ python scripts/launch_ultron.py --port 8765 --execute
 ultron "create note standup" --workspace .
 ultron "open notepad" --execute
 ultron "search the web for local voice assistants" --execute
+ultron "find information about quantum computing" --execute
 ultron "play lofi beats on Spotify" --execute
+ultron "WhatsApp Mom: I will be home at seven" --yes
 ultron "delete project_report.txt" --yes
 ```
 
@@ -368,6 +480,7 @@ http://127.0.0.1:8765
 
 The interface includes:
 
+- a staged opening sequence that assembles the neural core, verifies local subsystems, and reveals the workspace before the spoken briefing,
 - listening state: contracted calmer sphere,
 - thinking state: spiraling green eclipse/ring animation,
 - speaking state: expanded plasma lines and stronger glow,
@@ -376,10 +489,25 @@ The interface includes:
 - typed command input and Send button,
 - development controls for Listening, Thinking, Speaking, and Idle.
 
+The Jarvis workspace also supports:
+
+- an in-interface Camera window for `open camera` and `take a picture`, with drag, resize, minimize, maximize, and validated saves under `screenshot_dir`,
+- an in-interface Research window for web questions, with Groq synthesis in ULTRON's own wording and separate evidence links,
+- a time-aware startup greeting with current Open-Meteo weather for `assistant_location`,
+- speech barge-in: sustained speech while browser TTS is active cancels the reply and starts a fresh command capture,
+- opt-in MediaPipe hand controls for both ULTRON workspace manipulation and Windows-wide cursor, click, drag, scroll, zoom, app switching, desktop switching, and navigation gestures,
+- a Three.js Camera Relief designer that converts the visible frame into an adjustable textured depth mesh and exports OBJ geometry,
+- automatic safe memory for phrasing such as `my favorite song is Blinding Lights`, including later resolution of `play my favorite song`.
+
+Hand tracking loads the MediaPipe Tasks Vision runtime and hand-landmarker model from their pinned public CDN/model URLs the first time it is enabled. Camera frames stay in the browser for gesture inference. The 3D designer is intentionally described as a single-view depth relief; it cannot infer hidden sides of an object from one photograph.
+
 Local API endpoints:
 
 ```text
 POST /api/command
+POST /api/research
+POST /api/camera/capture
+GET  /api/briefing
 GET  /api/status
 GET  /api/memory
 POST /api/memory/forget
@@ -496,7 +624,8 @@ Provider choices:
 
 - `voice_stt_provider`: `browser`, `text_payload`, `faster_whisper`, `whisper_cpp`, `deepgram`, or `mock`.
 - `voice_stt_model`: faster-whisper model name such as `base.en`, or Deepgram model name such as `nova-3`.
-- `voice_tts_provider`: `browser_speech_synthesis`, `piper`, `pyttsx3`, or `mock`.
+- `voice_tts_provider`: `deepgram`, `browser_speech_synthesis`, `piper`, `pyttsx3`, or `mock`.
+- `voice_tts_model`: Deepgram Aura model such as `aura-2-orion-en`.
 - `voice_stt_model_path`: local faster-whisper or whisper.cpp model path.
 - `voice_tts_model_path`: local Piper model path.
 - `voice_tts_voice_path`: optional Piper voice config path.
@@ -511,7 +640,7 @@ POST /api/voice/test-stt
 POST /api/voice/test-tts
 ```
 
-If a local STT model, TTS model, Python package, or Piper executable is missing, ULTRON reports the issue and falls back to browser transcript/speech behavior. Typed commands, subtitles, and the safe runtime continue to work.
+If a cloud or local voice provider is unavailable, ULTRON reports the issue and falls back to browser transcript/speech behavior. Typed commands, subtitles, and the safe runtime continue to work.
 
 ## Phase 10 Wake Word and VAD
 
@@ -533,10 +662,13 @@ inactive -> waiting_for_wake_word -> listening -> transcribing
 Wake/VAD providers:
 
 - `wake_word_provider`: `text`, `openwakeword`, `double_clap`, or `mock`.
+- `wake_auto_start`: starts wake standby with the server so no mic/unmute button is required.
 - `wake_phrases`: defaults to `ULTRON` and `Hey ULTRON`.
 - `wake_model_path`: optional openWakeWord model path.
 - `vad_provider`: `energy`, `silero`, `webrtc`, or `mock`.
 - `vad_energy_threshold`: fallback energy threshold for noisy/empty input.
+
+For hands-free clap standby, set `wake_word_provider` to `double_clap`, `wake_auto_start` to `true`, and `voice_capture_provider` to `sounddevice`. ULTRON then records short energy-only windows without speech-to-text. A valid double clap triggers “At your service, sir,” followed by one full command capture using `voice_capture_seconds`; after the command or a silent timeout, it returns to clap standby automatically.
 - `double_clap`: optional adaptive energy-spike wake gate inspired by the reviewed Jarvis script. It only opens listening mode and never executes actions directly.
 
 Wake API endpoints:
@@ -562,14 +694,16 @@ python scripts/run_phase11_windows_ui.py --port 8765
 
 Implemented or safely fronted Windows tasks:
 
-- open approved apps by alias: Chrome, VS Code, Notepad, Calculator, File Explorer, and Terminal,
-- open/search files and folders only inside configured `safe_roots`,
-- create and append notes,
-- read/write clipboard text where supported,
-- take screenshots where Pillow/ImageGrab is available,
-- set volume with optional `pycaw`/`comtypes`,
-- set brightness with optional `screen-brightness-control`,
-- save reminders and timers.
+- open installed apps and built-in Settings, Camera, Task Manager, Control Panel, Clock, Photos, and Microsoft Store targets,
+- switch to running apps and request graceful close without force-killing unsaved work,
+- set or adjust volume and brightness, mute/unmute, and use play/pause/next/previous media commands,
+- play verified Spotify results and send exact-recipient WhatsApp messages,
+- open named websites or validated domains and run site-specific searches,
+- answer local time, date, battery, storage, system-information, and bounded arithmetic requests without an LLM,
+- search/open files and folders only inside configured `safe_roots`, create folders, and confirmation-gate collision-safe move/rename operations,
+- create and append case-preserving notes, read/write clipboard text, and take screenshots,
+- save reminders and start detached Windows timer notifications,
+- open confirmation-gated email drafts through the default mail handler without sending them.
 
 Permission behavior:
 
@@ -635,13 +769,13 @@ Recommended setup:
 .\scripts\setup_ultron_windows.ps1
 ```
 
-Recommended launch:
+Recommended desktop launch:
 
 ```powershell
-python scripts\launch_ultron.py
+.\.venv\Scripts\ultron-desktop.exe
 ```
 
-The launcher starts the backend and UI together, handles port conflicts, and prints both the main interface URL and diagnostics URL.
+The desktop launcher starts the loopback-only backend, selects another local port if needed, opens the native window, and shuts the backend down when that window closes. Use `python scripts\launch_ultron.py --open` when a browser-hosted development session is preferable.
 
 Operator scripts:
 
@@ -709,6 +843,6 @@ Phase 13 setup, launcher, diagnostics, demo, and verification scripts are operat
 
 1. Install and tune real faster-whisper/whisper.cpp and Piper models for the target laptop.
 2. Install real openWakeWord and Silero/WebRTC VAD dependencies for microphone audio.
-3. Add streaming partial transcripts and lower-latency speech playback.
+3. Add streaming partial STT transcripts; neural TTS playback already uses progressive audio streaming.
 4. Grow the dataset with real corrected transcripts and Hinglish/Hindi variants.
 5. Add embeddings and source-aware answer generation for the local knowledge base.

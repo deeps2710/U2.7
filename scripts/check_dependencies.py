@@ -22,9 +22,10 @@ def build_dependency_report() -> dict[str, object]:
         "dataset": ROOT / "data" / "jarvis_dataset_v2" / "jarvis_laptop_commands_synthetic_v2.jsonl",
         "web_index": ROOT / "web" / "index.html",
         "three_vendor": ROOT / "web" / "vendor" / "three.module.min.js",
+        "desktop_launcher": ROOT / "src" / "ultron27" / "desktop.py",
         "tests": ROOT / "tests" / "test_pipeline.py",
     }
-    required_packages = {"docx", "reportlab", "pypdf", "PIL"}
+    required_packages = {"PIL", "numpy", "sounddevice", "webview"}
     package_status = dependency_status()
     path_status = {
         name: {
@@ -69,8 +70,8 @@ def main(argv: list[str] | None = None) -> int:
             marker = "OK" if payload["available"] else "OPTIONAL/MISSING"
             print(f"  [{marker}] {name}: {payload['purpose']}")
         if report["missing_packages"]:
-            print("\nInstall missing report packages with:")
-            print("  python -m pip install python-docx reportlab pypdf pillow")
+            print("\nInstall missing desktop packages with:")
+            print("  python -m pip install -e .[desktop,windows]")
     return 0 if report["status"] == "ok" else 1
 
 

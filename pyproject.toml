@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ultron27"
 version = "0.1.0"
-description = "Local-first Jarvis-style laptop assistant MVP"
+description = "Local-first Jarvis-style desktop assistant"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "deeps2710" }]
@@ -13,12 +13,28 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
-voice = ["faster-whisper>=1.1.0", "sounddevice>=0.4.6"]
+voice = ["faster-whisper>=1.1.0", "numpy>=1.26", "sounddevice>=0.4.6"]
 neural = ["torch>=2.3"]
+desktop = [
+  "numpy>=1.26",
+  "pywebview>=6.2,<7",
+  "sounddevice>=0.4.6",
+]
+build = ["pyinstaller>=6.10"]
+windows = [
+  "Pillow>=10.0",
+  "comtypes>=1.2",
+  "pycaw>=20240210",
+  "pywinauto>=0.6.9",
+  "screen-brightness-control>=0.24",
+]
 
 [project.scripts]
 ultron = "ultron27.cli:main"
 ultron-ui = "ultron27.web_server:main"
+
+[project.gui-scripts]
+ultron-desktop = "ultron27.desktop:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -12,8 +12,6 @@ BLOCKED_TOOL_NAMES = {
 
 DESTRUCTIVE_OR_UNIMPLEMENTED_TOOLS = {
     "delete_file",
-    "move_file",
-    "rename_file",
     "restart_system",
     "run_script",
     "send_email",

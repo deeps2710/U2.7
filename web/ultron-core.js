@@ -1,114 +1,101 @@
 import * as THREE from "./vendor/three.module.min.js";
 
-const simplexNoise3D = `
-  vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
-  vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
-  vec4 permute(vec4 x) { return mod289(((x*34.0)+1.0)*x); }
-  vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
-  float snoise(vec3 v) {
-    const vec2 C = vec2(1.0/6.0, 1.0/3.0);
-    const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
-    vec3 i = floor(v + dot(v, C.yyy));
-    vec3 x0 = v - i + dot(i, C.xxx);
-    vec3 g = step(x0.yzx, x0.xyz);
-    vec3 l = 1.0 - g;
-    vec3 i1 = min(g.xyz, l.zxy);
-    vec3 i2 = max(g.xyz, l.zxy);
-    vec3 x1 = x0 - i1 + C.xxx;
-    vec3 x2 = x0 - i2 + C.yyy;
-    vec3 x3 = x0 - D.yyy;
-    i = mod289(i);
-    vec4 p = permute(permute(permute(i.z + vec4(0.0, i1.z, i2.z, 1.0)) + i.y + vec4(0.0, i1.y, i2.y, 1.0)) + i.x + vec4(0.0, i1.x, i2.x, 1.0));
-    float n_ = 0.142857142857;
-    vec3 ns = n_ * D.wyz - D.xzx;
-    vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
-    vec4 x_ = floor(j * ns.z);
-    vec4 y_ = floor(j - 7.0 * x_);
-    vec4 x = x_ * ns.x + ns.yyyy;
-    vec4 y = y_ * ns.x + ns.yyyy;
-    vec4 h = 1.0 - abs(x) - abs(y);
-    vec4 b0 = vec4(x.xy, y.xy);
-    vec4 b1 = vec4(x.zw, y.zw);
-    vec4 s0 = floor(b0) * 2.0 + 1.0;
-    vec4 s1 = floor(b1) * 2.0 + 1.0;
-    vec4 sh = -step(h, vec4(0.0));
-    vec4 a0 = b0.xzyw + s0.xzyw * sh.xxyy;
-    vec4 a1 = b1.xzyw + s1.xzyw * sh.zzww;
-    vec3 p0 = vec3(a0.xy, h.x);
-    vec3 p1 = vec3(a0.zw, h.y);
-    vec3 p2 = vec3(a1.xy, h.z);
-    vec3 p3 = vec3(a1.zw, h.w);
-    vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
-    p0 *= norm.x;
-    p1 *= norm.y;
-    p2 *= norm.z;
-    p3 *= norm.w;
-    vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
-    m = m * m;
-    return 42.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
-  }
-`;
-
 const STATE_PROFILES = {
-  idle: { scale: 1, shaderTime: 1, ringSpeed: 1, autoRotate: 0.5, light: 2.7, lightPulse: 0.35, exposure: 1.04, energy: 1, opacity: 1, particleSpeed: 0.05, particleEnergy: 1, flicker: 0.05 },
-  listening: { scale: 0.68, shaderTime: 0.42, ringSpeed: 0.34, autoRotate: 0.12, light: 1.42, lightPulse: 0.04, exposure: 0.9, energy: 0.58, opacity: 0.96, particleSpeed: 0.018, particleEnergy: 0.5, flicker: 0.008 },
-  thinking: { scale: 0.5, shaderTime: 1.35, ringSpeed: 2.25, autoRotate: 1.08, light: 3.1, lightPulse: 0.82, exposure: 1, energy: 1.16, opacity: 1, particleSpeed: 0.085, particleEnergy: 1.08, flicker: 0.16 },
-  transcribing: { scale: 0.74, shaderTime: 0.82, ringSpeed: 1, autoRotate: 0.55, light: 2.35, lightPulse: 0.38, exposure: 0.98, energy: 0.92, opacity: 1, particleSpeed: 0.05, particleEnergy: 0.8, flicker: 0.08 },
-  waiting_for_wake_word: { scale: 0.86, shaderTime: 0.62, ringSpeed: 0.55, autoRotate: 0.34, light: 2.05, lightPulse: 0.28, exposure: 0.96, energy: 0.78, opacity: 0.94, particleSpeed: 0.035, particleEnergy: 0.68, flicker: 0.045 },
-  inactive: { scale: 0.12, shaderTime: 0.18, ringSpeed: 0.035, autoRotate: 0.02, light: 0.12, lightPulse: 0, exposure: 0.5, energy: 0.08, opacity: 0.18, particleSpeed: 0.012, particleEnergy: 0.05, flicker: 0 },
+  inactive: { scale: 0.16, spin: 0.02, ringSpeed: 0.03, neural: 0.06, signal: 0.02, light: 0.08, opacity: 0.15, particles: 0.03, exposure: 0.72 },
+  idle: { scale: 0.96, spin: 0.28, ringSpeed: 0.48, neural: 0.72, signal: 0.48, light: 1.0, opacity: 0.94, particles: 0.62, exposure: 1.0 },
+  waiting_for_wake_word: { scale: 0.88, spin: 0.15, ringSpeed: 0.24, neural: 0.48, signal: 0.2, light: 0.66, opacity: 0.78, particles: 0.38, exposure: 0.92 },
+  listening: { scale: 0.92, spin: 0.12, ringSpeed: 0.2, neural: 0.92, signal: 1.02, light: 0.88, opacity: 0.96, particles: 0.52, exposure: 0.96 },
+  transcribing: { scale: 0.96, spin: 0.42, ringSpeed: 0.92, neural: 0.96, signal: 1.18, light: 1.08, opacity: 1.0, particles: 0.78, exposure: 1.0 },
+  thinking: { scale: 1.0, spin: 0.78, ringSpeed: 1.82, neural: 1.1, signal: 1.45, light: 1.2, opacity: 1.0, particles: 1.0, exposure: 1.04 },
+  speaking: { scale: 1.05, spin: 0.48, ringSpeed: 0.94, neural: 1.22, signal: 1.32, light: 1.34, opacity: 1.0, particles: 0.94, exposure: 1.06 },
 };
 
+const STATE_COLORS = {
+  inactive: 0x607174,
+  idle: 0x55e6a2,
+  waiting_for_wake_word: 0xf1c66d,
+  listening: 0x67cce6,
+  transcribing: 0x67cce6,
+  thinking: 0xf1c66d,
+  speaking: 0x55e6a2,
+};
+
+const pulseMatrix = new THREE.Matrix4();
+const pulsePosition = new THREE.Vector3();
+const pulseScale = new THREE.Vector3();
+const pulseRotation = new THREE.Quaternion();
+
 export function createArmillaryCore({ scene, camera, renderer }) {
-  camera.position.set(0, 1.05, 13.4);
-  camera.lookAt(0, 0, 0);
+  camera.position.set(0, 0.72, 11.6);
+  camera.lookAt(0, 0.18, 0);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.04;
+  renderer.toneMappingExposure = 1.0;
 
   const root = new THREE.Group();
-  root.position.y = 4.15;
-  root.rotation.x = -0.06;
+  root.position.set(0, 0.55, 0);
+  root.rotation.x = -0.04;
   scene.add(root);
 
-  const shared = { coreTime: { value: 0 }, energy: { value: 1 }, opacity: { value: 1 } };
-  const nucleus = makeNucleus(shared);
-  const core = makePlasmaCore(shared);
-  const aura = makeAura(shared);
-  const coreLight = new THREE.PointLight(0x00ff66, 2.7, 5.8, 2.0);
-  root.add(nucleus, core, aura, coreLight);
+  const processor = makeProcessor();
+  const lattice = makeNeuralLattice();
+  const orbitSystem = makeOrbitSystem();
+  root.add(processor.group, lattice.group, orbitSystem.group);
 
-  const rings = [];
-  const createRing = (...args) => {
-    const ring = makeArmillaryRing(...args);
-    root.add(ring.mesh);
-    rings.push(ring);
-  };
-
-  createRing(2.0, 0.45, 0, 0, 0, 2.0, 1.0, 0.0, 0.002, 0.0);
-  createRing(1.85, 0.06, 0.05, 0, -0.05, 5.0, 1.5, 0.0, 0.003, 0.0);
-  createRing(2.15, 0.18, Math.PI / 2, 0, 0, 3.0, 1.2, 0.003, 0.0, 0.001);
-  createRing(2.25, 0.14, Math.PI / 2, Math.PI / 3, 0, 4.0, 0.8, 0.002, 0.002, 0.0);
-  createRing(2.35, 0.14, Math.PI / 2, -Math.PI / 3, 0, 3.5, 1.4, 0.001, 0.0, 0.003);
-  createRing(2.5, 0.08, Math.PI / 4, Math.PI / 4, 0, 6.0, 1.8, -0.002, 0.001, 0.002);
-  createRing(2.6, 0.08, -Math.PI / 4, Math.PI / 6, 0, 5.0, 1.1, 0.002, -0.001, 0.001);
-  createRing(2.75, 0.05, 0.1, Math.PI / 2, 0.1, 8.0, 2.0, 0.0, -0.002, 0.0);
-  createRing(1.5, 0.06, Math.PI / 3, 0, Math.PI / 6, 2.0, 2.5, 0.004, 0.004, 0.0);
-  createRing(2.05, 0.05, 0.34, 0.0, 0.0, 7.0, 1.65, 0.0, 0.0015, 0.0);
-  createRing(2.05, 0.05, -0.34, 0.0, 0.0, 7.5, 1.35, 0.0, -0.0014, 0.0);
-
-  const particles = makeParticles();
+  const particles = makeBackgroundParticles();
   scene.add(particles.points);
 
+  const ambient = new THREE.AmbientLight(0x27443f, 0.38);
+  const keyLight = new THREE.PointLight(0x55e6a2, 2.2, 7.5, 2.0);
+  keyLight.position.set(1.4, 1.6, 2.5);
+  const rimLight = new THREE.PointLight(0x67cce6, 1.1, 6.0, 2.0);
+  rimLight.position.set(-2.0, -0.8, 1.4);
+  scene.add(ambient, keyLight, rimLight);
+
   const current = { ...STATE_PROFILES.idle };
+  const currentColor = new THREE.Color(STATE_COLORS.idle);
+  const targetColor = new THREE.Color(STATE_COLORS.idle);
   let visualState = "idle";
   let stateStartedAt = 0;
   let speechStartedAt = 0;
   let speechText = "";
   let textEmphasis = 0.35;
-  let voiceProfile = { pitch: 0.72, rate: 0.92, volume: 0.95 };
-  let targetRootY = 4.15;
+  let voiceProfile = { pitch: 0.86, rate: 0.94, volume: 0.95 };
+  let targetRootX = 0;
+  let targetRootY = 0.55;
+  let bootProgress = 1;
+  let bootActive = false;
 
   return {
+    startBoot() {
+      bootActive = true;
+      bootProgress = 0;
+      Object.assign(current, {
+        scale: 0.025,
+        spin: 0.04,
+        ringSpeed: 0.02,
+        neural: 0.01,
+        signal: 0.01,
+        light: 0.02,
+        opacity: 0.01,
+        particles: 0.01,
+        exposure: 0.68,
+      });
+      root.scale.setScalar(0.01);
+      root.position.z = -2.4;
+      root.rotation.y = -1.35;
+      processor.group.scale.setScalar(0.18);
+      lattice.group.scale.setScalar(0.34);
+      orbitSystem.group.scale.setScalar(0.5);
+      particles.material.opacity = 0;
+    },
+    setBootProgress(progress) {
+      bootProgress = THREE.MathUtils.clamp(Number(progress) || 0, 0, 1);
+    },
+    finishBoot() {
+      bootProgress = 1;
+      bootActive = false;
+    },
     setState(state) {
       const next = STATE_PROFILES[state] ? state : "idle";
       if (next !== visualState) {
@@ -129,49 +116,61 @@ export function createArmillaryCore({ scene, camera, renderer }) {
       };
     },
     setLayoutMode(mode) {
-      targetRootY = mode === "compact" ? 0.55 : 4.15;
+      targetRootX = mode === "compact" ? 0 : -1.72;
+      targetRootY = mode === "compact" ? 0.55 : 0.78;
     },
     update(time, state = visualState) {
       if (STATE_PROFILES[state] && state !== visualState) {
         visualState = state;
         stateStartedAt = time;
       }
-      const desired = dynamicProfile(visualState, time - stateStartedAt, time - speechStartedAt, speechText, textEmphasis, voiceProfile);
-      for (const key of Object.keys(current)) current[key] = THREE.MathUtils.lerp(current[key], desired[key], 0.055);
-
-      const flicker = 1 + (Math.sin(time * 11.0) * 0.45 + Math.sin(time * 23.0 + 0.8) * 0.18) * current.flicker;
-      const scale = current.scale * flicker;
-      const shaderTime = time * current.shaderTime;
-
-      root.position.y = THREE.MathUtils.lerp(root.position.y, targetRootY, 0.08);
-      shared.coreTime.value = shaderTime;
-      shared.energy.value = current.energy;
-      shared.opacity.value = current.opacity;
-      nucleus.scale.setScalar(scale * (1 + Math.sin(time * 7.6) * 0.035 * current.energy));
-      core.scale.setScalar(scale * (1 + Math.sin(time * 3.1) * 0.012 * current.energy));
-      aura.scale.setScalar(scale * (1 + Math.sin(time * 3.2) * 0.02 * current.energy));
-      coreLight.intensity = Math.max(0.02, (current.light + Math.sin(time * 5.2) * current.lightPulse) * flicker);
-      renderer.toneMappingExposure = current.exposure;
-
-      root.rotation.y += 0.003 * current.autoRotate;
-      root.rotation.x = -0.06 + Math.sin(time * 0.28) * 0.025 * current.energy;
-
-      for (const ring of rings) {
-        ring.material.uniforms.uTime.value = shaderTime;
-        ring.material.uniforms.uEnergy.value = current.energy;
-        ring.material.uniforms.uOpacity.value = current.opacity;
-        const ringBreath = 1 + Math.sin(time * 3.0 + ring.baseRotX * 0.7 + ring.baseRotY * 0.5) * (0.004 + current.flicker * 0.018);
-        ring.mesh.scale.setScalar(scale * ringBreath);
-        ring.mesh.rotation.x += ring.mechSpdX * current.ringSpeed;
-        ring.mesh.rotation.y += ring.mechSpdY * current.ringSpeed;
-        ring.mesh.rotation.z += ring.mechSpdZ * current.ringSpeed;
+      const desired = dynamicProfile(
+        visualState,
+        time - stateStartedAt,
+        time - speechStartedAt,
+        speechText,
+        textEmphasis,
+        voiceProfile
+      );
+      const boot = bootActive ? THREE.MathUtils.smootherstep(bootProgress, 0, 1) : 1;
+      const processorReveal = bootActive ? revealStage(bootProgress, 0.01, 0.38) : 1;
+      const latticeReveal = bootActive ? revealStage(bootProgress, 0.2, 0.67) : 1;
+      const orbitReveal = bootActive ? revealStage(bootProgress, 0.4, 0.84) : 1;
+      const particleReveal = bootActive ? revealStage(bootProgress, 0.58, 1) : 1;
+      if (bootActive) {
+        desired.scale *= THREE.MathUtils.lerp(0.08, 1, boot);
+        desired.opacity *= processorReveal;
+        desired.neural *= latticeReveal;
+        desired.signal *= latticeReveal;
+        desired.light *= processorReveal;
+        desired.particles *= particleReveal;
+        desired.exposure = THREE.MathUtils.lerp(0.68, desired.exposure, boot);
+      }
+      for (const key of Object.keys(current)) {
+        current[key] = bootActive ? desired[key] : THREE.MathUtils.lerp(current[key], desired[key], 0.055);
       }
 
-      particles.material.uniforms.uTime.value = time;
-      particles.material.uniforms.uEnergy.value = current.particleEnergy;
-      particles.material.uniforms.uOpacity.value = current.opacity;
-      particles.points.rotation.y += current.particleSpeed * 0.006;
-      particles.points.rotation.x = Math.sin(time * 0.11) * 0.035 * current.particleEnergy;
+      targetColor.setHex(STATE_COLORS[visualState] || STATE_COLORS.idle);
+      currentColor.lerp(targetColor, 0.045);
+      root.position.x = bootActive ? targetRootX * boot : THREE.MathUtils.lerp(root.position.x, targetRootX, 0.08);
+      root.position.y = bootActive ? THREE.MathUtils.lerp(0.55, targetRootY, boot) : THREE.MathUtils.lerp(root.position.y, targetRootY, 0.08);
+      root.position.z = bootActive ? THREE.MathUtils.lerp(-2.4, 0, boot) : THREE.MathUtils.lerp(root.position.z, 0, 0.1);
+      root.scale.setScalar(current.scale);
+      root.rotation.y += 0.00135 * current.spin + (bootActive ? (1 - boot) * 0.026 : 0);
+      root.rotation.x = -0.04 + Math.sin(time * 0.22) * 0.025 * current.opacity;
+
+      processor.group.scale.setScalar(THREE.MathUtils.lerp(0.18, 1, processorReveal));
+      lattice.group.scale.setScalar(THREE.MathUtils.lerp(0.34, 1, latticeReveal));
+      orbitSystem.group.scale.setScalar(THREE.MathUtils.lerp(0.5, 1, orbitReveal));
+      updateProcessor(processor, time, withReveal(current, processorReveal), currentColor);
+      updateNeuralLattice(lattice, time, withReveal(current, latticeReveal), currentColor);
+      updateOrbitSystem(orbitSystem, time, withReveal(current, orbitReveal), currentColor);
+      updateBackgroundParticles(particles, time, withReveal(current, particleReveal));
+
+      keyLight.color.copy(currentColor);
+      keyLight.intensity = (1.35 + current.light * 1.15 + Math.sin(time * 2.8) * current.signal * 0.12) * processorReveal;
+      rimLight.intensity = (0.48 + current.neural * 0.58) * latticeReveal;
+      renderer.toneMappingExposure = current.exposure;
     },
   };
 }
@@ -179,49 +178,548 @@ export function createArmillaryCore({ scene, camera, renderer }) {
 function dynamicProfile(state, stateAge, speechAge, text, textEmphasis, voiceProfile) {
   const base = { ...(STATE_PROFILES[state] || STATE_PROFILES.idle) };
   if (state === "waiting_for_wake_word") {
-    const boot = THREE.MathUtils.smootherstep(Math.min(stateAge / 2.4, 1), 0, 1);
-    base.scale = THREE.MathUtils.lerp(0.18, base.scale, boot);
-    base.energy = THREE.MathUtils.lerp(0.12, base.energy, boot);
-    base.opacity = THREE.MathUtils.lerp(0.18, base.opacity, boot);
-    base.light = THREE.MathUtils.lerp(0.18, base.light, boot);
+    const boot = THREE.MathUtils.smootherstep(Math.min(stateAge / 0.7, 1), 0, 1);
+    base.scale = THREE.MathUtils.lerp(0.78, base.scale, boot);
+    base.opacity = THREE.MathUtils.lerp(0.52, base.opacity, boot);
+    base.neural = THREE.MathUtils.lerp(0.28, base.neural, boot);
+    base.light = THREE.MathUtils.lerp(0.4, base.light, boot);
   }
   if (state === "inactive") {
-    const shutdown = THREE.MathUtils.smootherstep(Math.min(stateAge / 3.4, 1), 0, 1);
+    const shutdown = THREE.MathUtils.smootherstep(Math.min(stateAge / 2.7, 1), 0, 1);
     base.scale = THREE.MathUtils.lerp(1.0, base.scale, shutdown);
     base.opacity = THREE.MathUtils.lerp(1.0, base.opacity, shutdown);
-    base.energy = THREE.MathUtils.lerp(1.0, base.energy, shutdown);
-    base.light = THREE.MathUtils.lerp(2.7, base.light, shutdown);
+    base.neural = THREE.MathUtils.lerp(0.9, base.neural, shutdown);
+    base.light = THREE.MathUtils.lerp(1.0, base.light, shutdown);
   }
   if (state !== "speaking") return base;
 
-  const phraseWave = 0.5 + 0.5 * Math.sin(speechAge * 0.55 + 0.35 * Math.sin(speechAge * 0.18));
-  const sentenceIntent = 0.5 + 0.5 * Math.sin(speechAge * 0.21 + 1.2);
-  const syllableA = Math.max(0, Math.sin(speechAge * 2.9 + 0.9 * Math.sin(speechAge * 0.63)));
-  const syllableB = Math.max(0, Math.sin(speechAge * 4.7 + 1.4 + 0.4 * Math.sin(speechAge * 0.91)));
-  const syllableC = Math.max(0, Math.sin(speechAge * 6.6 + 2.1));
-  const wordAccent = Math.pow(Math.max(syllableA * 0.85, syllableB * 0.7), 1.1);
-  const pitch = THREE.MathUtils.clamp(Number(voiceProfile.pitch || 0.72), 0, 1.4);
-  const rate = THREE.MathUtils.clamp(Number(voiceProfile.rate || 0.92), 0.55, 1.6);
+  const phrase = 0.5 + 0.5 * Math.sin(speechAge * 0.58 + 0.3 * Math.sin(speechAge * 0.2));
+  const syllableA = Math.max(0, Math.sin(speechAge * 3.2 + 0.7 * Math.sin(speechAge * 0.7)));
+  const syllableB = Math.max(0, Math.sin(speechAge * 5.1 + 1.3));
+  const accent = Math.max(syllableA, syllableB * 0.78);
+  const pitch = THREE.MathUtils.clamp(Number(voiceProfile.pitch || 0.86), 0, 1.4);
+  const rate = THREE.MathUtils.clamp(Number(voiceProfile.rate || 0.94), 0.55, 1.6);
   const volume = THREE.MathUtils.clamp(Number(voiceProfile.volume || 0.95), 0, 1);
-  const prosody = THREE.MathUtils.clamp(textEmphasis * 0.45 + pitch * 0.28 + volume * 0.22 + rate * 0.08, 0.25, 1.25);
-  const emphasis = Math.pow(Math.max(wordAccent, syllableC * 0.52) * (0.72 + sentenceIntent * 0.28), 1.0) * prosody;
-  const speechEnvelope = THREE.MathUtils.clamp(phraseWave * 0.3 + wordAccent * 0.44 + syllableC * 0.1 + sentenceIntent * 0.16, 0, 1);
-  const microFlutter = 0.5 + 0.5 * Math.sin(speechAge * 9.5 + emphasis * 3.4);
-  const hasText = text.trim().length > 0 ? 1 : 0.68;
+  const prosody = THREE.MathUtils.clamp(textEmphasis * 0.46 + pitch * 0.24 + volume * 0.24 + rate * 0.08, 0.3, 1.25);
+  const envelope = THREE.MathUtils.clamp(phrase * 0.36 + accent * 0.64, 0, 1) * (text.trim() ? 1 : 0.72);
 
-  base.scale = THREE.MathUtils.lerp(0.96, 1.18, speechEnvelope * hasText) + emphasis * 0.025;
-  base.shaderTime = 1.0 + emphasis * 0.28;
-  base.ringSpeed = 1.22 + speechEnvelope * 0.64 + emphasis * 0.1;
-  base.autoRotate = 0.6 + speechEnvelope * 0.22 + emphasis * 0.05;
-  base.light = 2.9 + speechEnvelope * 1.08 + emphasis * 0.42 + microFlutter * 0.28;
-  base.lightPulse = 0.72 + emphasis * 0.42;
-  base.exposure = 1.02 + speechEnvelope * 0.12;
-  base.energy = 1.28 + speechEnvelope * 0.52 + emphasis * 0.18;
-  base.opacity = 1;
-  base.particleSpeed = 0.05 + emphasis * 0.018;
-  base.particleEnergy = 1.05 + speechEnvelope * 0.28;
-  base.flicker = 0.18 + speechEnvelope * 0.17 + emphasis * 0.12;
+  base.scale = 1.0 + envelope * 0.065;
+  base.ringSpeed = 0.82 + envelope * 0.55;
+  base.neural = 1.02 + envelope * 0.38 * prosody;
+  base.signal = 1.0 + envelope * 0.65 * prosody;
+  base.light = 1.08 + envelope * 0.55;
+  base.particles = 0.78 + envelope * 0.32;
   return base;
+}
+
+function makeProcessor() {
+  const group = new THREE.Group();
+
+  const emitterUniforms = {
+    uTime: { value: 0 },
+    uEnergy: { value: 1 },
+    uOpacity: { value: 1 },
+    uColor: { value: new THREE.Color(STATE_COLORS.idle) },
+  };
+  const emitter = new THREE.Mesh(
+    new THREE.SphereGeometry(0.33, 40, 40),
+    new THREE.ShaderMaterial({
+      uniforms: emitterUniforms,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      vertexShader: `
+        varying vec3 vNormal;
+        varying vec3 vWorld;
+        void main() {
+          vNormal = normalize(normalMatrix * normal);
+          vec4 world = modelMatrix * vec4(position, 1.0);
+          vWorld = world.xyz;
+          gl_Position = projectionMatrix * viewMatrix * world;
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        uniform float uEnergy;
+        uniform float uOpacity;
+        uniform vec3 uColor;
+        varying vec3 vNormal;
+        varying vec3 vWorld;
+        void main() {
+          vec3 viewDir = normalize(cameraPosition - vWorld);
+          float facing = max(dot(normalize(vNormal), viewDir), 0.0);
+          float rim = pow(1.0 - facing, 2.8);
+          float pulse = 0.86 + sin(uTime * 5.2) * 0.08 + sin(uTime * 11.0) * 0.025;
+          vec3 color = mix(uColor * 0.72, vec3(0.86, 1.0, 0.97), facing * 0.55);
+          color += uColor * rim * 0.65;
+          float alpha = clamp((0.58 + facing * 0.32 + rim * 0.25) * uOpacity, 0.0, 0.96);
+          gl_FragColor = vec4(color * pulse * (0.72 + uEnergy * 0.42), alpha);
+        }
+      `,
+    })
+  );
+
+  const coreGeometry = new THREE.IcosahedronGeometry(0.64, 2);
+  const coreMaterial = new THREE.MeshStandardMaterial({
+    color: 0x07110f,
+    emissive: 0x1c9c70,
+    emissiveIntensity: 0.58,
+    metalness: 0.76,
+    roughness: 0.28,
+    flatShading: true,
+    transparent: true,
+    opacity: 0.92,
+  });
+  const coreMesh = new THREE.Mesh(coreGeometry, coreMaterial);
+  const coreEdgeMaterial = new THREE.LineBasicMaterial({
+    color: STATE_COLORS.idle,
+    transparent: true,
+    opacity: 0.72,
+    blending: THREE.AdditiveBlending,
+  });
+  const coreEdges = new THREE.LineSegments(new THREE.EdgesGeometry(coreGeometry, 18), coreEdgeMaterial);
+
+  const frameGeometry = new THREE.IcosahedronGeometry(0.9, 1);
+  const frameMaterial = new THREE.MeshStandardMaterial({
+    color: 0x0b1717,
+    emissive: 0x17453e,
+    emissiveIntensity: 0.35,
+    metalness: 0.9,
+    roughness: 0.34,
+    transparent: true,
+    opacity: 0.16,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const frame = new THREE.Mesh(frameGeometry, frameMaterial);
+  const frameEdgeMaterial = new THREE.LineBasicMaterial({
+    color: 0x67cce6,
+    transparent: true,
+    opacity: 0.28,
+    blending: THREE.AdditiveBlending,
+  });
+  const frameEdges = new THREE.LineSegments(new THREE.EdgesGeometry(frameGeometry, 12), frameEdgeMaterial);
+
+  const irisRings = [];
+  const irisDefinitions = [
+    { radius: 0.75, rotation: [Math.PI / 2, 0.2, 0], color: 0x55e6a2 },
+    { radius: 0.79, rotation: [0.3, Math.PI / 2, 0.6], color: 0x67cce6 },
+    { radius: 0.83, rotation: [0.9, 0.4, Math.PI / 2], color: 0xf1c66d },
+  ];
+  for (const definition of irisDefinitions) {
+    const material = new THREE.MeshBasicMaterial({
+      color: definition.color,
+      transparent: true,
+      opacity: 0.38,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const mesh = new THREE.Mesh(new THREE.TorusGeometry(definition.radius, 0.012, 6, 96), material);
+    mesh.rotation.set(...definition.rotation);
+    irisRings.push({ mesh, material });
+    group.add(mesh);
+  }
+
+  const shellUniforms = {
+    uTime: { value: 0 },
+    uEnergy: { value: 1 },
+    uOpacity: { value: 1 },
+    uColor: { value: new THREE.Color(STATE_COLORS.idle) },
+  };
+  const cortexShell = new THREE.Mesh(
+    new THREE.SphereGeometry(1.24, 48, 36),
+    new THREE.ShaderMaterial({
+      uniforms: shellUniforms,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+      vertexShader: `
+        varying vec3 vNormal;
+        varying vec3 vLocal;
+        varying vec3 vWorld;
+        void main() {
+          vNormal = normalize(normalMatrix * normal);
+          vLocal = position;
+          vec4 world = modelMatrix * vec4(position, 1.0);
+          vWorld = world.xyz;
+          gl_Position = projectionMatrix * viewMatrix * world;
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        uniform float uEnergy;
+        uniform float uOpacity;
+        uniform vec3 uColor;
+        varying vec3 vNormal;
+        varying vec3 vLocal;
+        varying vec3 vWorld;
+        void main() {
+          vec3 viewDir = normalize(cameraPosition - vWorld);
+          float facing = max(dot(normalize(vNormal), viewDir), 0.0);
+          float fresnel = pow(1.0 - facing, 3.1);
+          float longitude = atan(vLocal.z, vLocal.x);
+          float latitude = asin(clamp(normalize(vLocal).y, -1.0, 1.0));
+          float latBand = pow(0.5 + 0.5 * sin(latitude * 21.0 - uTime * 0.7), 20.0);
+          float lonBand = pow(0.5 + 0.5 * sin(longitude * 18.0 + uTime * 0.45), 24.0);
+          float circuit = max(latBand * 0.7, lonBand * 0.45) * (0.25 + fresnel * 0.75);
+          float alpha = clamp((fresnel * 0.19 + circuit * 0.065 * uEnergy) * uOpacity, 0.0, 0.28);
+          vec3 color = mix(vec3(0.08, 0.22, 0.22), uColor, 0.7 + circuit * 0.3);
+          gl_FragColor = vec4(color * (0.75 + uEnergy * 0.35), alpha);
+        }
+      `,
+    })
+  );
+
+  group.add(cortexShell, frame, frameEdges, coreMesh, coreEdges, emitter);
+  return {
+    group,
+    emitter,
+    emitterUniforms,
+    shellUniforms,
+    coreMesh,
+    coreMaterial,
+    coreEdgeMaterial,
+    frame,
+    frameMaterial,
+    frameEdgeMaterial,
+    irisRings,
+  };
+}
+
+function updateProcessor(processor, time, profile, color) {
+  const reveal = profile.reveal ?? 1;
+  processor.emitterUniforms.uTime.value = time;
+  processor.emitterUniforms.uEnergy.value = profile.light;
+  processor.emitterUniforms.uOpacity.value = profile.opacity * reveal;
+  processor.emitterUniforms.uColor.value.copy(color);
+  processor.shellUniforms.uTime.value = time;
+  processor.shellUniforms.uEnergy.value = profile.neural;
+  processor.shellUniforms.uOpacity.value = profile.opacity * reveal;
+  processor.shellUniforms.uColor.value.copy(color);
+
+  processor.coreMaterial.emissive.copy(color).multiplyScalar(0.56);
+  processor.coreMaterial.emissiveIntensity = 0.34 + profile.light * 0.46;
+  processor.coreMaterial.opacity = (0.58 + profile.opacity * 0.35) * reveal;
+  processor.coreEdgeMaterial.color.copy(color);
+  processor.coreEdgeMaterial.opacity = (0.35 + profile.neural * 0.36) * reveal;
+  processor.frameMaterial.opacity = (0.08 + profile.opacity * 0.1) * reveal;
+  processor.frameEdgeMaterial.opacity = (0.12 + profile.neural * 0.18) * reveal;
+  processor.frame.rotation.y -= 0.0016 * profile.spin;
+  processor.frame.rotation.x += 0.0009 * profile.spin;
+  processor.coreMesh.rotation.y += 0.0032 * profile.spin;
+  processor.coreMesh.rotation.z -= 0.0014 * profile.spin;
+  const heartbeat = 1 + Math.sin(time * (2.4 + profile.signal * 0.35)) * 0.018 * profile.signal;
+  processor.emitter.scale.setScalar(heartbeat);
+  processor.irisRings.forEach((ring, index) => {
+    ring.material.opacity = (0.16 + profile.neural * (0.17 + index * 0.025)) * reveal;
+    ring.mesh.rotation.z += (index % 2 ? -1 : 1) * 0.0022 * profile.ringSpeed;
+  });
+}
+
+function makeNeuralLattice() {
+  const group = new THREE.Group();
+  const points = fibonacciSphere(96, 1.13);
+  const pointPositions = new Float32Array(points.length * 3);
+  const pointColors = new Float32Array(points.length * 3);
+  const emerald = new THREE.Color(0x55e6a2);
+  const cyan = new THREE.Color(0x67cce6);
+  points.forEach((point, index) => {
+    point.toArray(pointPositions, index * 3);
+    const blend = (point.y / 1.13 + 1) * 0.36 + ((index * 17) % 11) / 30;
+    const color = emerald.clone().lerp(cyan, THREE.MathUtils.clamp(blend, 0, 1));
+    color.toArray(pointColors, index * 3);
+  });
+
+  const nodeGeometry = new THREE.BufferGeometry();
+  nodeGeometry.setAttribute("position", new THREE.BufferAttribute(pointPositions, 3));
+  nodeGeometry.setAttribute("color", new THREE.BufferAttribute(pointColors, 3));
+  const nodeMaterial = new THREE.PointsMaterial({
+    size: 0.04,
+    sizeAttenuation: true,
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.88,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const nodes = new THREE.Points(nodeGeometry, nodeMaterial);
+
+  const edges = nearestNeighborEdges(points, 3);
+  const edgePositions = new Float32Array(edges.length * 6);
+  const edgeColors = new Float32Array(edges.length * 6);
+  edges.forEach(([from, to], index) => {
+    from.toArray(edgePositions, index * 6);
+    to.toArray(edgePositions, index * 6 + 3);
+    const fromColor = emerald.clone().lerp(cyan, (from.y / 1.13 + 1) * 0.5);
+    const toColor = emerald.clone().lerp(cyan, (to.y / 1.13 + 1) * 0.5);
+    fromColor.toArray(edgeColors, index * 6);
+    toColor.toArray(edgeColors, index * 6 + 3);
+  });
+  const edgeGeometry = new THREE.BufferGeometry();
+  edgeGeometry.setAttribute("position", new THREE.BufferAttribute(edgePositions, 3));
+  edgeGeometry.setAttribute("color", new THREE.BufferAttribute(edgeColors, 3));
+  const edgeMaterial = new THREE.LineBasicMaterial({
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.3,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const connections = new THREE.LineSegments(edgeGeometry, edgeMaterial);
+
+  const hubPoints = points.filter((_point, index) => index % 9 === 0);
+  const hubGeometry = new THREE.BufferGeometry().setFromPoints(hubPoints);
+  const hubMaterial = new THREE.PointsMaterial({
+    color: 0xf1c66d,
+    size: 0.075,
+    sizeAttenuation: true,
+    transparent: true,
+    opacity: 0.9,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const hubs = new THREE.Points(hubGeometry, hubMaterial);
+
+  const greenPulses = makePulseMesh(14, 0x55e6a2);
+  const amberPulses = makePulseMesh(7, 0xf1c66d);
+  group.add(connections, nodes, hubs, greenPulses, amberPulses);
+  return { group, points, edges, nodes, nodeMaterial, connections, edgeMaterial, hubs, hubMaterial, greenPulses, amberPulses };
+}
+
+function updateNeuralLattice(lattice, time, profile, color) {
+  const reveal = profile.reveal ?? 1;
+  lattice.group.rotation.y -= 0.0011 * profile.spin;
+  lattice.group.rotation.x = Math.sin(time * 0.19) * 0.08;
+  lattice.nodeMaterial.opacity = (0.28 + profile.neural * 0.52) * reveal;
+  lattice.nodeMaterial.size = 0.028 + profile.neural * 0.012;
+  lattice.edgeMaterial.opacity = (0.08 + profile.neural * 0.24) * reveal;
+  lattice.hubMaterial.color.lerp(color, 0.018);
+  lattice.hubMaterial.opacity = (0.24 + profile.signal * 0.5) * reveal;
+  lattice.hubMaterial.size = 0.05 + profile.signal * 0.022;
+  lattice.greenPulses.material.color.copy(color);
+  lattice.greenPulses.material.opacity = Math.min(1, 0.25 + profile.signal * 0.58) * reveal;
+  lattice.amberPulses.material.opacity = Math.min(0.92, 0.12 + profile.signal * 0.42) * reveal;
+  updatePulseMesh(lattice.greenPulses, lattice.edges, time, profile.signal, 0);
+  updatePulseMesh(lattice.amberPulses, lattice.edges, time * 0.83, profile.signal * 0.82, 5);
+}
+
+function makePulseMesh(count, color) {
+  const geometry = new THREE.OctahedronGeometry(0.032, 0);
+  const material = new THREE.MeshBasicMaterial({
+    color,
+    transparent: true,
+    opacity: 0.8,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const mesh = new THREE.InstancedMesh(geometry, material, count);
+  mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  mesh.frustumCulled = false;
+  return mesh;
+}
+
+function updatePulseMesh(mesh, edges, time, speed, offset) {
+  const count = mesh.count;
+  for (let index = 0; index < count; index += 1) {
+    const edge = edges[(index * 13 + offset * 7) % edges.length];
+    const phase = fract(time * (0.11 + (index % 5) * 0.013) * Math.max(0.04, speed) + index / count + offset * 0.071);
+    const eased = phase * phase * (3 - 2 * phase);
+    pulsePosition.lerpVectors(edge[0], edge[1], eased);
+    const size = (0.4 + Math.sin(Math.PI * phase) * 0.9) * (0.55 + speed * 0.34);
+    pulseScale.setScalar(Math.max(0.08, size));
+    pulseMatrix.compose(pulsePosition, pulseRotation, pulseScale);
+    mesh.setMatrixAt(index, pulseMatrix);
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+}
+
+function makeOrbitSystem() {
+  const group = new THREE.Group();
+  const definitions = [
+    { radius: 1.55, tube: 0.014, rotation: [1.18, 0.15, 0.1], speed: 0.52, color: 0x55e6a2 },
+    { radius: 1.82, tube: 0.012, rotation: [0.38, 1.0, 0.42], speed: -0.38, color: 0x67cce6 },
+    { radius: 2.08, tube: 0.016, rotation: [1.48, -0.58, -0.18], speed: 0.28, color: 0x55e6a2 },
+    { radius: 2.34, tube: 0.011, rotation: [0.72, -0.82, 0.92], speed: -0.22, color: 0xf1c66d },
+  ];
+  const orbits = definitions.map((definition, index) => {
+    const orbit = new THREE.Group();
+    orbit.rotation.set(...definition.rotation);
+
+    const bandMaterial = new THREE.MeshStandardMaterial({
+      color: 0x102326,
+      emissive: definition.color,
+      emissiveIntensity: 0.36,
+      metalness: 0.88,
+      roughness: 0.32,
+      transparent: true,
+      opacity: 0.5,
+      depthWrite: false,
+    });
+    const band = new THREE.Mesh(new THREE.TorusGeometry(definition.radius, definition.tube, 6, 160), bandMaterial);
+
+    const dashMaterial = new THREE.LineBasicMaterial({
+      color: definition.color,
+      transparent: true,
+      opacity: 0.42,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const dashes = makeDashedRing(definition.radius + 0.018, dashMaterial, 132, index + 2);
+
+    const markerMaterial = new THREE.MeshBasicMaterial({
+      color: definition.color,
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const marker = new THREE.Mesh(new THREE.OctahedronGeometry(0.055 + index * 0.004, 0), markerMaterial);
+    orbit.add(band, dashes, marker);
+    group.add(orbit);
+    return { group: orbit, band, bandMaterial, dashes, dashMaterial, marker, markerMaterial, ...definition, index };
+  });
+
+  const tickMaterial = new THREE.LineBasicMaterial({
+    color: 0x67cce6,
+    transparent: true,
+    opacity: 0.22,
+    blending: THREE.AdditiveBlending,
+  });
+  const ticks = makeRadialTicks(2.48, tickMaterial);
+  ticks.rotation.set(Math.PI / 2, 0, 0);
+  group.add(ticks);
+  return { group, orbits, ticks, tickMaterial };
+}
+
+function updateOrbitSystem(system, time, profile, color) {
+  const reveal = profile.reveal ?? 1;
+  system.group.rotation.y += 0.00035 * profile.spin;
+  system.orbits.forEach((orbit) => {
+    const drift = time * orbit.speed * profile.ringSpeed * 0.11;
+    orbit.group.rotation.x = orbit.rotation[0] + Math.sin(drift * 0.42 + orbit.index) * 0.055;
+    orbit.group.rotation.y = orbit.rotation[1] + drift;
+    orbit.group.rotation.z = orbit.rotation[2] + Math.cos(drift * 0.33 + orbit.index) * 0.035;
+    const markerAngle = time * orbit.speed * (0.42 + profile.ringSpeed * 0.2) + orbit.index * 1.37;
+    orbit.marker.position.set(Math.cos(markerAngle) * orbit.radius, Math.sin(markerAngle) * orbit.radius, 0);
+    orbit.marker.rotation.x += 0.02 * profile.ringSpeed;
+    orbit.marker.rotation.y -= 0.015 * profile.ringSpeed;
+    orbit.bandMaterial.opacity = (0.17 + profile.opacity * 0.27) * reveal;
+    orbit.bandMaterial.emissiveIntensity = 0.14 + profile.neural * 0.28;
+    orbit.dashMaterial.opacity = (0.12 + profile.neural * (0.18 + orbit.index * 0.018)) * reveal;
+    orbit.markerMaterial.opacity = Math.min(1, 0.3 + profile.signal * 0.5) * reveal;
+    if (orbit.index === 0) orbit.markerMaterial.color.lerp(color, 0.035);
+  });
+  system.tickMaterial.opacity = (0.08 + profile.neural * 0.13) * reveal;
+  system.ticks.rotation.z += 0.0008 * profile.ringSpeed;
+}
+
+function makeDashedRing(radius, material, segments, offset) {
+  const positions = [];
+  for (let index = 0; index < segments; index += 1) {
+    if ((index + offset) % 7 > 2) continue;
+    const start = (index / segments) * Math.PI * 2;
+    const end = ((index + 0.72) / segments) * Math.PI * 2;
+    positions.push(Math.cos(start) * radius, Math.sin(start) * radius, 0);
+    positions.push(Math.cos(end) * radius, Math.sin(end) * radius, 0);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  return new THREE.LineSegments(geometry, material);
+}
+
+function makeRadialTicks(radius, material) {
+  const positions = [];
+  for (let index = 0; index < 24; index += 1) {
+    const angle = (index / 24) * Math.PI * 2;
+    const length = index % 6 === 0 ? 0.12 : 0.065;
+    positions.push(Math.cos(angle) * (radius - length), Math.sin(angle) * (radius - length), 0);
+    positions.push(Math.cos(angle) * radius, Math.sin(angle) * radius, 0);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  return new THREE.LineSegments(geometry, material);
+}
+
+function makeBackgroundParticles() {
+  const count = 430;
+  const geometry = new THREE.BufferGeometry();
+  const positions = new Float32Array(count * 3);
+  const colors = new Float32Array(count * 3);
+  const emerald = new THREE.Color(0x2db77c);
+  const cyan = new THREE.Color(0x4c9fb3);
+  const random = seededRandom(271828);
+  for (let index = 0; index < count; index += 1) {
+    const radius = 2.8 + random() * 5.4;
+    const theta = random() * Math.PI * 2;
+    const phi = Math.acos(2 * random() - 1);
+    positions[index * 3] = radius * Math.sin(phi) * Math.cos(theta);
+    positions[index * 3 + 1] = radius * Math.sin(phi) * Math.sin(theta);
+    positions[index * 3 + 2] = radius * Math.cos(phi);
+    emerald.clone().lerp(cyan, random()).multiplyScalar(0.55 + random() * 0.45).toArray(colors, index * 3);
+  }
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  const material = new THREE.PointsMaterial({
+    size: 0.025,
+    sizeAttenuation: true,
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.42,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  return { points: new THREE.Points(geometry, material), material };
+}
+
+function updateBackgroundParticles(particles, time, profile) {
+  const reveal = profile.reveal ?? 1;
+  particles.points.rotation.y += 0.00012 + profile.particles * 0.00018;
+  particles.points.rotation.x = Math.sin(time * 0.09) * 0.035;
+  particles.material.opacity = (0.08 + profile.particles * 0.34) * reveal;
+  particles.material.size = 0.014 + profile.particles * 0.012;
+}
+
+function revealStage(progress, start, end) {
+  const normalized = THREE.MathUtils.clamp((progress - start) / Math.max(0.001, end - start), 0, 1);
+  return THREE.MathUtils.smootherstep(normalized, 0, 1);
+}
+
+function withReveal(profile, reveal) {
+  return { ...profile, reveal };
+}
+
+function fibonacciSphere(count, radius) {
+  const points = [];
+  const golden = Math.PI * (3 - Math.sqrt(5));
+  for (let index = 0; index < count; index += 1) {
+    const y = 1 - (index / (count - 1)) * 2;
+    const radial = Math.sqrt(Math.max(0, 1 - y * y));
+    const theta = golden * index;
+    const variation = 0.97 + ((index * 37) % 17) / 280;
+    points.push(new THREE.Vector3(Math.cos(theta) * radial, y, Math.sin(theta) * radial).multiplyScalar(radius * variation));
+  }
+  return points;
+}
+
+function nearestNeighborEdges(points, neighborCount) {
+  const seen = new Set();
+  const edges = [];
+  points.forEach((point, index) => {
+    const nearest = points
+      .map((candidate, candidateIndex) => ({ candidateIndex, distance: candidateIndex === index ? Infinity : point.distanceToSquared(candidate) }))
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, neighborCount);
+    for (const item of nearest) {
+      const low = Math.min(index, item.candidateIndex);
+      const high = Math.max(index, item.candidateIndex);
+      const key = `${low}:${high}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      edges.push([points[low], points[high]]);
+    }
+  });
+  return edges;
 }
 
 function estimateTextEmphasis(text) {
@@ -229,264 +727,20 @@ function estimateTextEmphasis(text) {
   if (!value.trim()) return 0.35;
   const letters = value.match(/[A-Za-z]/g) || [];
   const upper = value.match(/[A-Z]/g) || [];
-  const punch = value.match(/[!?;:]/g) || [];
-  const commas = value.match(/[,.-]/g) || [];
+  const punctuation = value.match(/[!?;:]/g) || [];
+  const pauses = value.match(/[,.-]/g) || [];
   const caps = letters.length ? upper.length / letters.length : 0;
-  return THREE.MathUtils.clamp(0.28 + punch.length * 0.08 + commas.length * 0.018 + caps * 0.5, 0.22, 1.0);
+  return THREE.MathUtils.clamp(0.28 + punctuation.length * 0.08 + pauses.length * 0.018 + caps * 0.5, 0.22, 1.0);
 }
 
-function makeNucleus(shared) {
-  return new THREE.Mesh(
-    new THREE.SphereGeometry(0.46, 56, 56),
-    new THREE.ShaderMaterial({
-      uniforms: shared,
-      transparent: true,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      vertexShader: `
-        varying vec3 vNormal;
-        varying vec3 vWorld;
-        void main() {
-          vNormal = normalize(normalMatrix * normal);
-          vec4 world = modelMatrix * vec4(position, 1.0);
-          vWorld = world.xyz;
-          gl_Position = projectionMatrix * viewMatrix * world;
-        }
-      `,
-      fragmentShader: `
-        uniform float coreTime;
-        uniform float energy;
-        uniform float opacity;
-        varying vec3 vNormal;
-        varying vec3 vWorld;
-        void main() {
-          vec3 V = normalize(cameraPosition - vWorld);
-          float facing = pow(max(dot(normalize(vNormal), V), 0.0), 0.28);
-          float rim = pow(1.0 - max(dot(normalize(vNormal), V), 0.0), 3.4);
-          float pulse = 0.88 + 0.12 * sin(coreTime * 8.0);
-          float alpha = clamp((facing * 0.92 + rim * 0.24) * pulse * opacity, 0.0, 1.0);
-          vec3 color = vec3(0.76, 1.0, 0.84) * 1.35 + vec3(0.0, 1.0, 0.25) * rim;
-          gl_FragColor = vec4(color * alpha * 1.45 * energy, alpha);
-        }
-      `,
-    })
-  );
+function seededRandom(seed) {
+  let state = seed >>> 0;
+  return () => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 4294967296;
+  };
 }
 
-function makePlasmaCore(shared) {
-  return new THREE.Mesh(
-    new THREE.SphereGeometry(1.05, 80, 80),
-    new THREE.ShaderMaterial({
-      uniforms: shared,
-      transparent: true,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      vertexShader: `
-        varying vec2 vUv;
-        varying vec3 vPos;
-        varying vec3 vNormal;
-        varying vec3 vWorld;
-        uniform float coreTime;
-        uniform float energy;
-        ${simplexNoise3D}
-        void main() {
-          vUv = uv;
-          vPos = position;
-          vNormal = normalize(normalMatrix * normal);
-          float pressure = snoise(position * 3.1 + vec3(coreTime * 1.4, -coreTime * 0.8, coreTime * 0.55));
-          float fine = snoise(position * 8.0 + vec3(-coreTime * 2.1, coreTime * 1.2, 0.0));
-          float displacement = (pressure * 0.042 + fine * 0.014) * (0.75 + energy * 0.25);
-          vec3 newPosition = position + normal * displacement;
-          vec4 world = modelMatrix * vec4(newPosition, 1.0);
-          vWorld = world.xyz;
-          gl_Position = projectionMatrix * viewMatrix * world;
-        }
-      `,
-      fragmentShader: `
-        varying vec2 vUv;
-        varying vec3 vPos;
-        varying vec3 vNormal;
-        varying vec3 vWorld;
-        uniform float coreTime;
-        uniform float energy;
-        uniform float opacity;
-        ${simplexNoise3D}
-        void main() {
-          vec3 p = normalize(vPos);
-          float n1 = snoise(p * 3.6 + vec3(coreTime * 1.85, -coreTime * 1.20, coreTime * 0.65));
-          float n2 = snoise(p * 7.4 + vec3(-coreTime * 2.7, coreTime * 2.05, coreTime * 1.2));
-          float n3 = snoise(p * 17.5 + vec3(coreTime * 4.5, -coreTime * 2.8, coreTime * 1.9));
-          float ridgeA = pow(1.0 - abs(n1), 4.6);
-          float ridgeB = pow(1.0 - abs(n2), 7.0);
-          float micro = pow(1.0 - abs(n3), 11.0);
-          float veins = clamp(ridgeA * 0.80 + ridgeB * 0.75 + micro * 0.55, 0.0, 1.45);
-          vec3 V = normalize(cameraPosition - vWorld);
-          float fresnel = pow(1.0 - max(dot(normalize(vNormal), V), 0.0), 2.4);
-          float pressurePulse = 0.88 + 0.12 * sin(coreTime * 6.2 + ridgeA * 5.0);
-          float frontHotspot = pow(max(dot(p, normalize(vec3(-0.25, 0.12, 1.0))), 0.0), 10.0);
-          vec3 deep = vec3(0.0, 0.035, 0.008);
-          vec3 neon = vec3(0.0, 1.0, 0.27);
-          vec3 lime = vec3(0.25, 1.0, 0.42);
-          vec3 whiteHot = vec3(0.74, 1.0, 0.84);
-          vec3 finalColor = deep + neon * veins * 1.45 + lime * ridgeB * 0.80 + whiteHot * (micro * 0.85 + frontHotspot * 0.55) + neon * fresnel * 0.25;
-          float alpha = clamp((0.24 + veins * 0.82 + fresnel * 0.16 + frontHotspot * 0.25) * opacity, 0.0, 0.96);
-          gl_FragColor = vec4(finalColor * pressurePulse * energy, alpha);
-        }
-      `,
-    })
-  );
-}
-
-function makeAura(shared) {
-  return new THREE.Mesh(
-    new THREE.SphereGeometry(1.18, 80, 80),
-    new THREE.ShaderMaterial({
-      uniforms: shared,
-      transparent: true,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      side: THREE.BackSide,
-      vertexShader: `
-        varying vec3 vNormal;
-        varying vec3 vWorld;
-        void main() {
-          vNormal = normalize(normalMatrix * normal);
-          vec4 world = modelMatrix * vec4(position, 1.0);
-          vWorld = world.xyz;
-          gl_Position = projectionMatrix * viewMatrix * world;
-        }
-      `,
-      fragmentShader: `
-        uniform float coreTime;
-        uniform float energy;
-        uniform float opacity;
-        varying vec3 vNormal;
-        varying vec3 vWorld;
-        void main() {
-          vec3 V = normalize(cameraPosition - vWorld);
-          float rim = pow(1.0 - abs(dot(normalize(vNormal), V)), 3.8);
-          float pulse = 0.78 + 0.22 * sin(coreTime * 3.2);
-          float alpha = rim * pulse * 0.11 * opacity * (0.7 + energy * 0.3);
-          gl_FragColor = vec4(vec3(0.0, 1.0, 0.25) * alpha * 1.4 * energy, alpha);
-        }
-      `,
-    })
-  );
-}
-
-function makeArmillaryRing(radius, width, rotX, rotY, rotZ, sweepFreq, sweepSpeed, mechSpdX, mechSpdY, mechSpdZ) {
-  const material = new THREE.ShaderMaterial({
-    uniforms: {
-      uTime: { value: 0 },
-      uSweepSpeed: { value: sweepSpeed },
-      uFreq: { value: sweepFreq },
-      uEnergy: { value: 1 },
-      uOpacity: { value: 1 },
-    },
-    transparent: true,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-    vertexShader: `
-      varying vec2 vUv;
-      varying vec3 vPos;
-      void main() {
-        vUv = uv;
-        vPos = position;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-      }
-    `,
-    fragmentShader: `
-      varying vec2 vUv;
-      varying vec3 vPos;
-      uniform float uTime;
-      uniform float uSweepSpeed;
-      uniform float uFreq;
-      uniform float uEnergy;
-      uniform float uOpacity;
-      ${simplexNoise3D}
-      void main() {
-        float edge = smoothstep(0.0, 0.035, vUv.y) * smoothstep(1.0, 0.965, vUv.y);
-        float edgeTop = smoothstep(0.045, 0.0, abs(vUv.y - 0.965));
-        float edgeBottom = smoothstep(0.045, 0.0, abs(vUv.y - 0.035));
-        float centerSeam = smoothstep(0.018, 0.0, abs(vUv.y - 0.5));
-        float crossProfile = smoothstep(1.0, 0.18, abs(vUv.y - 0.5) * 2.0);
-        float ticksA = pow(sin(vUv.x * 96.0) * 0.5 + 0.5, 24.0);
-        float ticksB = pow(sin(vUv.x * 24.0 + 1.2) * 0.5 + 0.5, 18.0);
-        float tickMask = (smoothstep(0.18, 0.0, abs(vUv.y - 0.18)) + smoothstep(0.18, 0.0, abs(vUv.y - 0.82))) * 0.5;
-        float etch = (ticksA * 0.45 + ticksB * 0.26) * tickMask;
-        float structural = (edgeTop + edgeBottom) * 0.42 + centerSeam * 0.16 + etch;
-        float progress = fract(vUv.x * uFreq - uTime * uSweepSpeed * 0.085);
-        float d = min(progress, 1.0 - progress);
-        float sweep = exp(-d * d * 55.0);
-        float phase2 = fract(vUv.x * (uFreq * 0.55 + 1.0) + uTime * uSweepSpeed * 0.045 + 0.37);
-        float d2 = min(phase2, 1.0 - phase2);
-        sweep += exp(-d2 * d2 * 95.0) * 0.55;
-        sweep *= crossProfile;
-        float elecNoise = snoise(vec3(vUv.x * 38.0, vUv.y * 11.0, uTime * 2.5));
-        float veinNoise = snoise(vec3(vUv.x * 120.0, vUv.y * 28.0, -uTime * 1.6));
-        float crackle = smoothstep(0.48, 0.96, abs(elecNoise)) * sweep;
-        float microVeins = smoothstep(0.62, 0.98, abs(veinNoise)) * sweep * 0.42;
-        vec3 baseBand = vec3(0.0, 0.12, 0.045) * edge + vec3(0.0, 0.24, 0.10) * structural * edge;
-        vec3 neonColor = vec3(0.0, 0.95, 0.24);
-        vec3 hotColor = vec3(0.72, 1.0, 0.82);
-        vec3 finalColor = baseBand + neonColor * (sweep * 0.92 + crackle * 0.80 + microVeins * 0.55) + hotColor * (crackle * 0.85 + edgeTop * sweep * 0.12 + edgeBottom * sweep * 0.12);
-        float alpha = edge * (0.20 + structural * 0.18 + sweep * 0.38 + crackle * 0.24 + microVeins * 0.20);
-        alpha = clamp(alpha, 0.0, 0.78) * uOpacity;
-        gl_FragColor = vec4(finalColor * 1.06 * uEnergy, alpha);
-      }
-    `,
-  });
-  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, width, 192, 1, true), material);
-  mesh.rotation.set(rotX, rotY, rotZ);
-  mesh.renderOrder = radius < 2.1 ? 3 : 2;
-  return { mesh, material, mechSpdX, mechSpdY, mechSpdZ, baseRotX: rotX, baseRotY: rotY, baseRotZ: rotZ };
-}
-
-function makeParticles() {
-  const count = 620;
-  const geometry = new THREE.BufferGeometry();
-  const positions = new Float32Array(count * 3);
-  const alphas = new Float32Array(count);
-  for (let i = 0; i < count; i += 1) {
-    const r = 2.4 + Math.random() * 5.3;
-    const theta = Math.random() * 2 * Math.PI;
-    const phi = Math.acos(2 * Math.random() - 1);
-    positions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-    positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-    positions[i * 3 + 2] = r * Math.cos(phi);
-    alphas[i] = Math.random();
-  }
-  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-  geometry.setAttribute("alpha", new THREE.BufferAttribute(alphas, 1));
-  const material = new THREE.ShaderMaterial({
-    uniforms: { uTime: { value: 0 }, uEnergy: { value: 1 }, uOpacity: { value: 1 } },
-    transparent: true,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-    vertexShader: `
-      attribute float alpha;
-      varying float vAlpha;
-      void main() {
-        vAlpha = alpha;
-        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = 18.0 / -mvPosition.z;
-        gl_Position = projectionMatrix * mvPosition;
-      }
-    `,
-    fragmentShader: `
-      varying float vAlpha;
-      uniform float uTime;
-      uniform float uEnergy;
-      uniform float uOpacity;
-      void main() {
-        float dist = length(gl_PointCoord - vec2(0.5));
-        if (dist > 0.5) discard;
-        float twinkle = sin(uTime * 2.0 + vAlpha * 10.0) * 0.5 + 0.5;
-        vec3 color = mix(vec3(0.10, 0.45, 0.18), vec3(0.22, 0.95, 0.34), twinkle) * (0.72 + 0.28 * uEnergy);
-        gl_FragColor = vec4(color, vAlpha * twinkle * (0.34 + uEnergy * 0.16) * uOpacity);
-      }
-    `,
-  });
-  return { points: new THREE.Points(geometry, material), material };
+function fract(value) {
+  return value - Math.floor(value);
 }

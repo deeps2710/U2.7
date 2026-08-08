@@ -31,6 +31,7 @@ class WebSearchResponse:
     answer: str
     results: tuple[WebSearchResult, ...] = ()
     error: str = ""
+    synthesized: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -68,24 +69,69 @@ def search_web(query: str, *, limit: int = 3, timeout: float = DEFAULT_TIMEOUT_S
     if not results:
         return WebSearchResponse("not_found", clean_query, f"I searched for {clean_query}, but I did not find useful results.")
 
+    results = filter_relevant_results(clean_query, results)
     answer = summarize_results(clean_query, results)
     return WebSearchResponse("success", clean_query, answer, tuple(results))
 
 
 def summarize_results(query: str, results: list[WebSearchResult]) -> str:
-    lines = [f"I found this on the web for {query}:"]
-    for index, result in enumerate(results[:3], start=1):
-        detail = f"{index}. {result.title}"
-        if result.snippet:
-            detail += f" - {result.snippet}"
-        lines.append(detail)
-    lines.append("Sources: " + "; ".join(result.url for result in results[:3]))
-    return "\n".join(lines)
+    count = min(len(results), 3)
+    noun = "source" if count == 1 else "sources"
+    return f"I found {count} useful {noun} about {query}. I will keep the evidence separate instead of repeating search snippets."
 
 
 def normalize_query(query: str) -> str:
     clean = " ".join(str(query or "").strip().split())
     return clean[:MAX_QUERY_LENGTH]
+
+
+def filter_relevant_results(query: str, results: list[WebSearchResult]) -> list[WebSearchResult]:
+    stop_words = {
+        "about",
+        "became",
+        "current",
+        "details",
+        "facts",
+        "find",
+        "for",
+        "gather",
+        "how",
+        "information",
+        "into",
+        "latest",
+        "look",
+        "more",
+        "online",
+        "research",
+        "search",
+        "tell",
+        "that",
+        "their",
+        "this",
+        "what",
+        "when",
+        "where",
+        "which",
+        "why",
+        "with",
+    }
+    query_terms = {_term_stem(token) for token in re.findall(r"[a-z0-9]+", query.lower()) if len(token) >= 2 and token not in stop_words}
+    if not query_terms or len(results) < 2:
+        return results
+    relevant = []
+    for result in results:
+        haystack_terms = {_term_stem(token) for token in re.findall(r"[a-z0-9]+", f"{result.title} {result.snippet}".lower())}
+        if query_terms & haystack_terms:
+            relevant.append(result)
+    return relevant or results
+
+
+def _term_stem(term: str) -> str:
+    if len(term) > 4 and term.endswith("ies"):
+        return term[:-3] + "y"
+    if len(term) > 3 and term.endswith("s") and not term.endswith("ss"):
+        return term[:-1]
+    return term
 
 
 def _needs_current_search(query: str) -> bool:

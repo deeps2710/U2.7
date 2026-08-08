@@ -21,6 +21,10 @@ DEFAULT_ALIASES = {
     "spotify": "spotify.exe",
     "calculator": "calc.exe",
     "calc": "calc.exe",
+    "camera": "microsoft.windows.camera:",
+    "settings": "ms-settings:",
+    "task manager": "taskmgr.exe",
+    "control panel": "control.exe",
     "file explorer": "explorer.exe",
     "explorer": "explorer.exe",
     "terminal": "wt.exe",
@@ -37,15 +41,18 @@ def generate_config(
     tts_provider: str = "browser_speech_synthesis",
     dry_run: bool = True,
     app_aliases: dict[str, str] | None = None,
+    whatsapp_contacts: dict[str, str] | None = None,
 ) -> dict[str, object]:
     return {
         "dataset_path": "data/jarvis_dataset_v2/jarvis_laptop_commands_synthetic_v2.jsonl",
         "audit_log": ".ultron/audit.jsonl",
         "dry_run": dry_run,
         "workspace": workspace,
-        "safe_roots": safe_roots or [workspace, "~/Desktop", "~/Documents", "~/Downloads"],
+        "safe_roots": safe_roots or [workspace, "~/Desktop", "~/Documents", "~/Downloads", "~/Pictures", "~/Music", "~/Videos"],
         "screenshot_dir": ".ultron/screenshots",
         "app_aliases": app_aliases or DEFAULT_ALIASES,
+        "whatsapp_contacts": whatsapp_contacts or {},
+        "whatsapp_require_confirmation": True,
         "planner_mode": "rules",
         "llm_provider": "ollama",
         "llm_model": "qwen2.5:7b-instruct",
@@ -58,19 +65,27 @@ def generate_config(
         "voice_capture_seconds": 4,
         "voice_tts_provider": tts_provider,
         "voice_stt_model": stt_model,
+        "voice_tts_model": "aura-2-orion-en",
+        "voice_stt_language": "multi",
+        "voice_stt_keyterms": ["ULTRON", "WhatsApp", "Spotify"],
         "voice_stt_model_path": None,
         "voice_tts_model_path": None,
         "voice_tts_voice_path": None,
         "voice_device": "cpu",
         "voice_identity": "ULTRON",
-        "voice_rate": 0.94,
-        "voice_pitch": 0.86,
-        "voice_volume": 0.95,
+        "voice_preference": "Microsoft George",
+        "voice_rate": 1.03,
+        "voice_pitch": 1.0,
+        "voice_volume": 1.0,
         "wake_word_provider": "text",
+        "wake_auto_start": False,
         "wake_phrases": ["ULTRON", "Hey ULTRON"],
         "wake_model_path": None,
         "vad_provider": "energy",
         "vad_energy_threshold": 0.015,
+        "startup_briefing_enabled": True,
+        "assistant_location": "Jabalpur",
+        "speech_barge_in_enabled": True,
     }
 
 
@@ -91,11 +106,14 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print("ULTRON 2.7 config wizard")
         workspace = _ask("Workspace path", ".")
-        safe_roots_text = _ask("Safe roots, separated by semicolons", f"{workspace};~/Desktop;~/Documents;~/Downloads")
+        safe_roots_text = _ask(
+            "Safe roots, separated by semicolons",
+            f"{workspace};~/Desktop;~/Documents;~/Downloads;~/Pictures;~/Music;~/Videos",
+        )
         stt = _ask("STT provider (browser, text_payload, faster_whisper, whisper_cpp, mock)", "browser")
         capture = _ask("Capture provider (browser, sounddevice, mock)", "browser")
         stt_model = _ask("faster-whisper model name, if used", "base.en") if stt == "faster_whisper" else None
-        tts = _ask("TTS provider (browser_speech_synthesis, piper, pyttsx3, mock)", "browser_speech_synthesis")
+        tts = _ask("TTS provider (browser_speech_synthesis, deepgram, piper, pyttsx3, mock)", "browser_speech_synthesis")
         dry_run = _ask("Start in dry-run mode? (yes/no)", "yes").strip().lower() not in {"no", "n", "false", "0"}
         config = generate_config(
             workspace=workspace,
